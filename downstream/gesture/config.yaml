@@ -1,0 +1,33 @@
+# ==============================================================================
+# STCNet Downstream Task Configuration
+# ==============================================================================
+
+# Project paths
+project_root: "${CLEANSEMG_ROOT}"
+stcnet_root: "${CLEANSEMG_ROOT}/downstream_tasks/stcnet"
+
+# Input paths (from main project)
+qc_index: "${CLEANSEMG_ROOT}/outputs/preprocessed/DB2/logs/qc_index.csv"
+db2_raw: "${DATA_ROOT}/DB2"
+mecge_model: "${CLEANSEMG_ROOT}/outputs/weights/crossDB_online_mix_v621_best.pth"
+noise_library: "${CLEANSEMG_ROOT}/outputs/noise/sEMG_noise_train"
+
+# Output paths
+denoised_output: "./outputs/denoised_data/DB2"
+stcnet_pkl_output: "./STCNet/pkl"
+
+# Processing options
+device: "cuda"  # cuda or cpu
+compute_metrics: true
+max_files_test: null  # Set to integer for testing (e.g., 5)
+
+# Bandpass filter (as per meeting decision: 20-500 Hz)
+bandpass:
+  low: 20.0
+  high: 500.0
+  order: 4
+
+# STCNet preprocessing
+stcnet:
+  normalize_method: "minmax"  # minmax to [0, 1]
+  max_sampling_ratio: 10  # 1000 Hz → 100 Hz

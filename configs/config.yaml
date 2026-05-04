@@ -1,0 +1,266 @@
+# ==============================================================================
+# sEMG Cross-DB Denoising Pipeline Configuration
+# Version 6.2.1 - 修正版本
+# ${CLEANSEMG_ROOT}/config.yaml
+# ==============================================================================
+
+project:
+  name: "Cross-DB sEMG Denoising"
+  version: "6.2.1"
+  random_seed: 2025
+
+paths:
+  root: "${CLEANSEMG_ROOT}"
+
+  datasets:
+    DB2: "${DATA_ROOT}/DB2"
+    DB3: "${DATA_ROOT}/DB3"
+    DB4: "${DATA_ROOT}/DB4"
+    DB7: "${DATA_ROOT}/DB7"
+    DB8: "${DATA_ROOT}/DB8"
+    DB10: "${DATA_ROOT}/DB10"
+
+  output:
+    base: "outputs"
+    preprocessed: "preprocessed"
+    clean_mat: "clean_mat"
+    segments: "segments/data_crossDB_seg2s"
+    noise_train: "noise/sEMG_noise_train"
+    noise_test: "noise/sEMG_noise_test"
+    splits: "splits"
+    reports: "reports"
+    logs: "logs"
+
+  noise_sources:
+    ecg: "${DATA_ROOT}/mit-bih-normal-sinus-rhythm-database-1.0.0"
+    nstdb: "${DATA_ROOT}/mit-bih-noise-stress-test-database-1.0.0"
+    moa_train: "${DATA_ROOT}/moa_train"
+    moa_test: "${DATA_ROOT}/moa_test"
+
+datasets:
+  test_db: "DB2"
+  train_valid_dbs: ["DB3", "DB4", "DB7", "DB8", "DB10"]
+
+  sampling_rates:
+    DB2: 2000
+    DB3: 2000
+    DB4: 2000
+    DB7: 2000
+    DB8: 1111
+    DB10: 1926
+
+  exercises:
+    DB2: [1, 2, 3]
+    DB3: [1, 2, 3]
+    DB4: [1, 2, 3]
+    DB7: [1, 2]
+    DB8: [1]
+    DB10: [1]
+
+preprocessing:
+  bandpass:
+    enabled: true
+    low_cutoff: 20.0
+    high_cutoff: 500.0
+    order: 4
+    filter_type: "butterworth"
+
+  # 新增：Notch filter 配置 (用於 ECG 和 MOA)
+  notch:
+    enabled: true
+    freq_hz: 50  # 50 or 60 Hz
+    q: 30
+
+  segmentation:
+    length_s: 2
+    target_fs: 1000
+    threshold: 0.02
+    overlap: 0.0
+
+# 修正：完整的 normalization 配置
+normalization:
+  enabled: true
+  method: "Q99"         # Q99, Q95, RMS, MAD, STD
+  percentile: 0.99      # 當 method 為 Q99/Q95 時使用
+  clip_range: [-1.0, 1.0]
+  save_scale: true      # 儲存 scale factor 為 .npy 檔案
+
+quality_control:
+  spectral:
+    SMR_min: 12.0
+    SHR_min: 15.0
+    OHM_max: 1.4
+
+  snr_grading:
+    A_excellent: 18.0
+    B_good: 10.0
+    C_unacceptable: 1.8
+
+  hampel:
+    enabled: true
+    apply_to_A: true
+    apply_to_B: true
+    er_max_A: 0.10
+    er_max_B: 0.10
+    nan_is_fail: true
+    half_window_bins: 40
+    threshold: 5.0
+    # 固定視窗參數
+    window_s: 2.0
+    hop_s: 1.0
+    aggregate: "max"  # max or mean
+
+splitting:
+  train_ratio: 0.80
+  valid_ratio: 0.20
+  min_valid_subjects: 2
+
+noise:
+  types: ["PLI", "ECG", "MOA", "WGN", "Color"]
+
+  snr_train:
+    min: -15.0
+    max: 15.0
+    wgn_min: -5.0
+    distribution: "uniform"
+
+  snr_test:
+    grid: [-15, -10, -5, 0, 5, 10, 15]
+    grid_wgn: [-5, 0, 5, 10, 15]
+
+  k_types:
+    min: 1
+    max: 5
+
+  generation:
+    time_length: 200
+    target_fs: 1000
+
+    pli:
+      fundamental_hz: [50, 60]
+      drift_enabled: true
+      drift_range: 0.3
+      harmonics: 5
+      amplitude_decay: 1
+      all_harmonics: true
+
+    color:
+      types: ["pink", "brown"]
+      sample_mode: "random"
+      pink_alpha: 1.0
+      brown_alpha: 2.0
+
+    # 修正：ECG 配置明確分離 record split 與 segment count
+    ecg:
+      # Record-level split (持久化)
+      test_record_count: 4  # 保留 4 個 record 給 test
+      
+      # Segment generation
+      train_segments: 24    # 生成 24 個 200s segments (train)
+      test_segments: 4      # 生成 4 個 200s segments (test)
+      
+      # Sampling strategy
+      hourly_sampling: true
+      segments_per_hour: 1
+      total_hours: 24
+      manual_inspection: true
+
+    train_count:
+      PLI: 20
+      WGN: 20
+      ECG: 24   # 對應 train_segments
+      MOA: -1
+      Color: 20
+
+    test_count:
+      PLI: 10
+      WGN: 10
+      ECG: 4    # 對應 test_segments
+      MOA: -1
+      Color: 10
+
+pipeline:
+  steps:
+    preprocess: true
+    quality_filter: true
+    export_clean: true
+    generate_noise: true
+    split_subjects: true
+    generate_segments: true
+
+  force_rerun: false
+  keep_labels: ["A_excellent", "B_good"]
+
+logging:
+  level: "INFO"
+  save_logs: true
+  log_dir: "logs"
+
+exp:
+  name: crossDB_online_mix_v621
+
+train:
+  epochs: 50
+  batch_size: 16
+  accum: 1
+  lr: 3.0e-4
+  lr_decay: 0.99
+  warmup_epochs: 5
+  lr_milestones: [20, 30, 40]
+  lr_gamma: 0.5
+  clip_grad: 5.0
+  prefetch_factor: 4
+  dbg_every: 2000
+  patience: 10
+
+model:
+  fea: "pha"
+  norm: False
+  fmamba: True
+  dense_channel: 64
+  compress_factor: 0.5
+  num_tscblocks: 4
+  edepth: 4
+  mdepth: 4
+  pdepth: 4
+
+  # GroupNorm option (建議用於 small batch)
+  use_gn: false  # true to use GroupNorm instead of InstanceNorm
+  gn_groups: 8   # 必須整除 dense_channel
+
+  sampling_rate: 1000
+  n_fft: 512
+  hop_size: 128
+  win_size: 512
+
+  beta: 1.0
+  mask_hp_cut_hz: 0  # >0 to enable high-pass gate
+
+  loss_fn: "time+com+con"
+  loss_weights:
+    time: 0.25
+    com: 0.40
+    con: 0.25
+    mr: 0.08    # MR-STFT (ablation controlled)
+
+  lsig_L2: 5.0e-5
+
+  # MR-STFT Loss Config (optional)
+  w_sc: 1.0
+  w_log_mag: 1.0
+  mrstft_log_eps: 1.0e-7
+  mrstft_eps: 1.0e-9
+
+# Ablation Study Flags
+ablation:
+  use_mrstft: true   # Multi-Resolution STFT Loss
+  use_entropy: true  # Mask Entropy (監控用，不參與優化)
+  use_phase: true    # Phase Prediction (false = 直接用 noisy phase)
+
+metrics:
+  sampling_rate: 1000
+  n_fft: 1024
+  hop_size: 200
+  win_size: 200
+  f_min: 20.0
+  f_max: 500.0

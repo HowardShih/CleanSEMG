@@ -1,0 +1,9 @@
+outputs/
+*.pth
+*.npz
+*.npy
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+*.pkl
