@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CLEANSEMG | sEMG Denoising Benchmark</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f6f3ed;
+      --bg-alt: #ece7dc;
+      --surface: #ffffff;
+      --surface-soft: #faf7f0;
+      --border: #d7d0c1;
+      --border-dark: #bdb3a1;
+      --text-primary: #1b1813;
+      --text-secondary: #5d5548;
+      --text-muted: #8a8172;
+      --accent: #b83227;
+      --accent-dark: #8f251c;
+      --accent-soft: #f9e4df;
+      --accent-cool: #256d95;
+      --cool-soft: #e0eef5;
+      --gold: #9a6b11;
+      --gold-soft: #f4ebd7;
+      --green: #34745b;
+      --green-soft: #e2f0e9;
+      --font-display: 'DM Serif Display', Georgia, serif;
+      --font-body: 'DM Sans', Arial, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      --shadow: 0 20px 55px rgba(27, 24, 19, 0.08);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: 16px;
+      line-height: 1.68;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent-cool); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    strong { color: var(--text-primary); font-weight: 600; }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(246, 243, 237, 0.94);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 28px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+    }
+    .nav-logo {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent);
+      letter-spacing: 0.02em;
+      margin-right: auto;
+    }
+    .nav-links { display: flex; gap: 2px; flex-wrap: wrap; justify-content: flex-end; }
+    .nav-links a {
+      font-size: 13px;
+      color: var(--text-secondary);
+      padding: 6px 10px;
+      border-radius: 4px;
+    }
+    .nav-links a:hover {
+      background: var(--bg-alt);
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .hero {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 82px 28px 54px;
+      text-align: center;
+    }
+    .venue-badge {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      padding: 4px 14px;
+      border-radius: 3px;
+      margin-bottom: 24px;
+    }
+    .hero h1 {
+      font-family: var(--font-display);
+      font-size: clamp(2.25rem, 6vw, 4.25rem);
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+      max-width: 960px;
+      margin: 0 auto 18px;
+    }
+    .hero h1 .kw { color: var(--accent); font-style: normal; }
+    .hero-sub {
+      font-size: clamp(1rem, 2vw, 1.18rem);
+      font-weight: 300;
+      color: var(--text-secondary);
+      max-width: 780px;
+      margin: 0 auto 30px;
+      line-height: 1.62;
+    }
+    .affil-block {
+      margin-bottom: 32px;
+      font-size: 13.5px;
+      color: var(--text-muted);
+    }
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 26px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 5px;
+      font-size: 13.5px;
+      font-weight: 500;
+      border: 1.5px solid transparent;
+      transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+      line-height: 1;
+    }
+    .badge:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 7px 20px rgba(27, 24, 19, 0.12);
+      text-decoration: none;
+    }
+    .badge-paper { background: var(--surface); border-color: var(--border); color: var(--text-secondary); }
+    .badge-github { background: var(--text-primary); color: #f7f2e8; }
+    .badge-hf { background: #ffb31a; color: #1b1813; }
+    .hero-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+    .stat-card {
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 14px 12px;
+    }
+    .stat-card .num {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 19px;
+      color: var(--accent);
+      margin-bottom: 2px;
+    }
+    .stat-card .label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.35;
+    }
+
+    .divider {
+      max-width: 1120px;
+      margin: 0 auto;
+      border: none;
+      border-top: 1px solid var(--border);
+    }
+    section, .bg-inner {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 62px 28px;
+    }
+    .bg-wrap { background: var(--bg-alt); }
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+    h2 {
+      font-family: var(--font-display);
+      font-size: clamp(1.8rem, 3vw, 2.15rem);
+      font-style: italic;
+      margin-bottom: 18px;
+      line-height: 1.18;
+    }
+    h3 { font-size: 16px; margin-bottom: 8px; }
+    p {
+      color: var(--text-secondary);
+      font-size: 15.5px;
+      margin-bottom: 14px;
+    }
+
+    .lead {
+      font-size: 16.5px;
+      color: var(--text-secondary);
+      max-width: 860px;
+    }
+
+    .figure-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 30px 0;
+      box-shadow: 0 10px 35px rgba(27, 24, 19, 0.04);
+    }
+    .figure-media {
+      min-height: 310px;
+      background: linear-gradient(135deg, #eee8dc 0%, #ddd3c1 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      position: relative;
+    }
+    .figure-media img {
+      width: 100%;
+      max-height: 520px;
+      object-fit: contain;
+      display: block;
+    }
+    .figure-fallback {
+      min-height: 250px;
+      width: 100%;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 26px;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-style: italic;
+      border: 1px dashed var(--border-dark);
+      background: rgba(255,255,255,0.45);
+    }
+    .figure-caption {
+      padding: 14px 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      background: var(--surface-soft);
+      font-style: italic;
+      line-height: 1.55;
+    }
+
+    .concept-grid, .finding-grid, .citation-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 26px;
+    }
+    .concept-card, .finding-card, .citation-card, .dataset-card, .method-card, .limit-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 22px 23px;
+    }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent);
+      margin-bottom: 10px;
+      letter-spacing: 0.01em;
+    }
+    .concept-card p, .finding-card p, .method-card p, .limit-card p {
+      font-size: 13.2px;
+      color: var(--text-muted);
+      line-height: 1.58;
+      margin: 0;
+    }
+
+    .pipeline {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-top: 30px;
+      padding: 22px;
+    }
+    .pipeline-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+    .pipeline-step {
+      border: 1px solid var(--border);
+      background: var(--surface-soft);
+      border-radius: 6px;
+      padding: 16px 14px;
+      position: relative;
+    }
+    .pipeline-step:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      top: 50%;
+      right: -14px;
+      transform: translateY(-50%);
+      color: var(--accent);
+      font-family: var(--font-mono);
+      z-index: 2;
+    }
+    .pipeline-step .step {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+    .pipeline-step strong {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+    .pipeline-step span:last-child {
+      display: block;
+      font-size: 12.5px;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+
+    .dataset-layout {
+      display: grid;
+      grid-template-columns: 1.05fr 1fr;
+      gap: 16px;
+      margin-top: 28px;
+    }
+    .dataset-card.large { grid-row: span 2; }
+    .tag {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 3px;
+      margin-bottom: 12px;
+    }
+    .tag-main { background: var(--accent-soft); color: var(--accent); }
+    .tag-down { background: var(--cool-soft); color: var(--accent-cool); }
+    .tag-noise { background: var(--gold-soft); color: var(--gold); }
+    .tag-method { background: var(--green-soft); color: var(--green); }
+    .dataset-card .meta, .method-card .meta {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.62;
+    }
+    .dataset-card ul, .method-card ul, .limit-list {
+      margin: 12px 0 0 18px;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .method-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      margin-top: 26px;
+    }
+
+    .formula-box {
+      background: #1f1c17;
+      color: #f7f2e8;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin: 26px 0 0;
+      overflow-x: auto;
+    }
+    .formula-box .formula-title {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: #cfbda5;
+      margin-bottom: 10px;
+    }
+    .formula-box .formula {
+      font-family: Georgia, serif;
+      font-size: 20px;
+      line-height: 1.6;
+      white-space: nowrap;
+    }
+    .formula-box .formula-note {
+      margin-top: 8px;
+      font-size: 12.5px;
+      color: #c5baac;
+    }
+
+    .table-wrapper {
+      overflow-x: auto;
+      margin-top: 28px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+    }
+    table {
+      width: 100%;
+      min-width: 1320px;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      background: var(--surface);
+      white-space: nowrap;
+    }
+    thead { background: var(--text-primary); color: #f5efe5; }
+    thead th {
+      padding: 10px 12px;
+      text-align: center;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+      vertical-align: middle;
+      border-right: 1px solid rgba(255,255,255,0.08);
+    }
+    thead tr.sub th {
+      font-size: 11px;
+      color: #cfc5b7;
+      font-weight: 400;
+      padding-top: 5px;
+      padding-bottom: 10px;
+    }
+    tbody tr { border-bottom: 1px solid var(--border); }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:nth-child(even) { background: var(--surface-soft); }
+    tbody td {
+      padding: 10px 12px;
+      color: var(--text-secondary);
+      text-align: center;
+      vertical-align: middle;
+    }
+    td.best {
+      font-weight: 700;
+      color: var(--accent);
+      background: rgba(184, 50, 39, 0.06);
+    }
+    td.model-name {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-primary);
+      text-align: left;
+      position: sticky;
+      left: 0;
+      background: inherit;
+      z-index: 1;
+    }
+    thead th:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: var(--text-primary);
+    }
+    .table-note {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 10px;
+      font-style: italic;
+    }
+
+    .result-callout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 26px;
+    }
+    .callout {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 20px 22px;
+    }
+    .callout h3 {
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+    .callout p {
+      font-size: 13.5px;
+      color: var(--text-muted);
+      margin: 0;
+      line-height: 1.58;
+    }
+
+    .limits-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      margin-top: 26px;
+    }
+
+    .citation-card {
+      padding: 0;
+      overflow: hidden;
+    }
+    .citation-card header {
+      padding: 18px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-soft);
+    }
+    .citation-card header .tag { margin-bottom: 8px; }
+    .citation-card header h3 { font-size: 15px; margin: 0; }
+    .citation-card .body { padding: 18px 20px 20px; }
+    .cite-item {
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      margin-top: 12px;
+    }
+    .cite-item:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+    .cite-title {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 3px;
+    }
+    .cite-meta {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    footer {
+      background: var(--text-primary);
+      color: #8f8778;
+      text-align: center;
+      padding: 36px 28px;
+      font-size: 13px;
+    }
+    footer p { margin-bottom: 8px; color: #8f8778; }
+    footer a { color: #c8bba8; }
+    footer a:hover { color: #f2e7d7; }
+    .fsep { margin: 0 8px; opacity: 0.35; }
+
+    @media (max-width: 900px) {
+      .hero-stats, .concept-grid, .finding-grid, .citation-grid, .pipeline-row, .dataset-layout, .method-grid, .limits-grid, .result-callout {
+        grid-template-columns: 1fr;
+      }
+      .dataset-card.large { grid-row: auto; }
+      .pipeline-step:not(:last-child)::after {
+        content: "↓";
+        right: auto;
+        left: 50%;
+        top: auto;
+        bottom: -18px;
+        transform: translateX(-50%);
+      }
+      .pipeline-step { margin-bottom: 6px; }
+    }
+    @media (max-width: 650px) {
+      .nav-inner { height: auto; min-height: 52px; padding-top: 8px; padding-bottom: 8px; align-items: flex-start; flex-direction: column; gap: 6px; }
+      .nav-logo { margin-right: 0; }
+      .nav-links a { padding: 5px 7px; font-size: 12px; }
+      .hero { padding-top: 58px; }
+      section, .bg-inner { padding: 48px 22px; }
+    }
+  </style>
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <span class="nav-logo">CLEANSEMG</span>
+    <div class="nav-links">
+      <a href="#abstract">Abstract</a>
+      <a href="#benchmark">Benchmark</a>
+      <a href="#data">Data</a>
+      <a href="#methods">Methods</a>
+      <a href="#results">Results</a>
+      <a href="#limitations">Limitations</a>
+      <a href="#references">References</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="venue-badge">Project Website</div>
+  <h1><span class="kw">CLEANSEMG:</span> <em>A Benchmark for Single-Channel Surface Electromyography Denoising Algorithms</em></h1>
+  <p class="hero-sub">
+    A unified benchmark for evaluating sEMG denoising algorithms across signal reconstruction,
+    physiological feature preservation, and downstream task utility.
+  </p>
+  <div class="affil-block"><a href="https://bio-asplab.citi.sinica.edu.tw/" target="_blank" rel="noopener">Bio-ASP Lab</a>, Institute of Information Science, Academia Sinica</div>
+  <div class="badges">
+    <a class="badge badge-paper" href="#references">Paper coming soon</a>
+    <a class="badge badge-github" href="https://github.com/HowardShih/sEMGBench" target="_blank" rel="noopener">Code</a>
+    <a class="badge badge-hf" href="https://huggingface.co/datasets/HowardShih/sEMGBench" target="_blank" rel="noopener">Dataset</a>
+  </div>
+
+  <div class="hero-stats">
+    <div class="stat-card"><span class="num">6</span><span class="label">Ninapro subsets considered</span></div>
+    <div class="stat-card"><span class="num">5</span><span class="label">contaminant categories</span></div>
+    <div class="stat-card"><span class="num">8</span><span class="label">representative denoisers</span></div>
+    <div class="stat-card"><span class="num">3</span><span class="label">evaluation levels</span></div>
+  </div>
+</header>
+
+<hr class="divider">
+
+<section id="abstract">
+  <p class="section-label">Paper</p>
+  <h2>Abstract</h2>
+  <p class="lead">
+    Surface electromyography (sEMG) is central to prosthetic control, rehabilitation, human–computer
+    interaction, and physiological monitoring, but recorded signals are highly susceptible to noise,
+    interference, and motion-related artifacts. Existing sEMG denoising studies are typically evaluated
+    under heterogeneous datasets, noise settings, and metric choices, which makes direct comparison difficult.
+  </p>
+  <p>
+    <strong>CLEANSEMG</strong> addresses this gap by providing a standardized and reproducible benchmark for
+    single-channel sEMG denoising. The benchmark integrates public sEMG datasets, controlled contaminant
+    generation, representative classical and neural denoisers, and a multi-level evaluation protocol that
+    jointly assesses waveform reconstruction, feature-level preservation, and downstream task performance.
+  </p>
+
+  <div class="figure-box">
+    <div class="figure-media">
+      <img src="figs/Fig1_overall_structure.png" alt="CLEANSEMG benchmark overview" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+      <div class="figure-fallback">
+        Place your overview image here as <strong>figs/Fig1_overall_structure.png</strong>.<br>
+        If your current file is PDF, export <em>Fig1_overall_structure.pdf</em> to PNG for reliable web display.
+      </div>
+    </div>
+    <div class="figure-caption">
+      Figure 1. CLEANSEMG constructs clean sEMG references, injects controlled contaminants, applies representative denoisers, and evaluates performance at signal, feature, and downstream-task levels.
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<div class="bg-wrap" id="benchmark">
+  <div class="bg-inner">
+    <p class="section-label">Benchmark Design</p>
+    <h2>From waveform recovery to application-level evaluation</h2>
+    <p>
+      CLEANSEMG is designed around a central observation: a denoiser with strong signal-level scores does not
+      necessarily preserve the structures used by downstream sEMG systems. The benchmark therefore separates
+      denoising utility into three complementary axes.
+    </p>
+
+    <div class="concept-grid">
+      <div class="concept-card">
+        <div class="eyebrow">Axis I</div>
+        <h3>Signal reconstruction</h3>
+        <p>SNR improvement, RMSE, PRD, and LSD measure whether the denoised signal is closer to the clean reference in time and spectral domains.</p>
+      </div>
+      <div class="concept-card">
+        <div class="eyebrow">Axis II</div>
+        <h3>Feature preservation</h3>
+        <p>ARV, ZCR, MNF, MDF, and kurtosis errors test whether denoising preserves physiologically meaningful sEMG descriptors.</p>
+      </div>
+      <div class="concept-card">
+        <div class="eyebrow">Axis III</div>
+        <h3>Downstream utility</h3>
+        <p>Gesture recognition and fatigue classification evaluate whether denoised signals retain task-discriminative information.</p>
+      </div>
+    </div>
+
+    <div class="pipeline">
+      <div class="pipeline-row">
+        <div class="pipeline-step">
+          <span class="step">01</span>
+          <strong>Clean corpus</strong>
+          <span>Quality-controlled sEMG segments from public datasets.</span>
+        </div>
+        <div class="pipeline-step">
+          <span class="step">02</span>
+          <strong>Contamination</strong>
+          <span>Controlled mixing with PLI, ECG, MOA, WGN, and CLN.</span>
+        </div>
+        <div class="pipeline-step">
+          <span class="step">03</span>
+          <strong>Denoising</strong>
+          <span>Classical and neural methods under a unified protocol.</span>
+        </div>
+        <div class="pipeline-step">
+          <span class="step">04</span>
+          <strong>Metrics</strong>
+          <span>Signal-level and feature-level reconstruction errors.</span>
+        </div>
+        <div class="pipeline-step">
+          <span class="step">05</span>
+          <strong>Tasks</strong>
+          <span>Gesture recognition and self-perceived fatigue classification.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<section id="data">
+  <p class="section-label">Data</p>
+  <h2>Datasets and contaminant sources</h2>
+  <p>
+    The benchmark uses public sEMG corpora for clean-reference construction and held-out downstream evaluation.
+    It also defines a contaminant library covering structured interference, physiological interference,
+    movement-related artifacts, and stochastic noise.
+  </p>
+
+  <div class="dataset-layout">
+    <div class="dataset-card large">
+      <span class="tag tag-main">Primary sEMG corpus</span>
+      <h3>Ninapro DB2, DB3, DB4, DB7, DB8, and DB10</h3>
+      <div class="meta">
+        Ninapro provides diverse acquisition settings, subject groups, electrode configurations, and gesture protocols.
+        In CLEANSEMG, DB3, DB4, DB7, DB8, and DB10 form the training pool, while DB2 is used as a held-out gesture-recognition test pool.
+      </div>
+      <ul>
+        <li>DB2: held-out test pool for gesture recognition.</li>
+        <li>DB3/DB4/DB7/DB8/DB10: training pool for neural denoisers.</li>
+        <li>Subsets with insufficient sampling rate or non-comparable protocol are excluded.</li>
+        <li><a href="https://ninapro.hevs.ch/" target="_blank" rel="noopener">Ninapro official website</a></li>
+      </ul>
+    </div>
+
+    <div class="dataset-card">
+      <span class="tag tag-down">Downstream dataset</span>
+      <h3>Cerqueira fatigue dataset</h3>
+      <div class="meta">
+        Dynamic upper-limb sEMG recordings with three-level self-perceived fatigue annotations. This dataset is used to test whether denoising improves fatigue classification.
+      </div>
+      <ul>
+        <li>13 participants; approximately 13 h 20 min of recordings.</li>
+        <li>Four active-muscle channels per trial.</li>
+        <li><a href="https://doi.org/10.5281/zenodo.14182446" target="_blank" rel="noopener">Zenodo dataset page</a></li>
+      </ul>
+    </div>
+
+    <div class="dataset-card">
+      <span class="tag tag-noise">Contaminants</span>
+      <h3>PLI, ECG, MOA, WGN, and CLN</h3>
+      <div class="meta">
+        CLEANSEMG evaluates denoisers under five contaminant categories. PLI, WGN, and CLN are simulated; ECG and motion artifacts are taken from real-world recordings.
+      </div>
+      <ul>
+        <li>ECG: MIT-BIH Normal Sinus Rhythm Database.</li>
+        <li>MOA: MIT-BIH Noise Stress Test Database and Ninapro-style motion artifact data.</li>
+        <li>PLI, WGN, CLN: controlled mathematical simulation.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<div class="bg-wrap" id="methods">
+  <div class="bg-inner">
+    <p class="section-label">Methodology</p>
+    <h2>Controlled paired contamination and unified evaluation</h2>
+    <p>
+      CLEANSEMG first constructs clean sEMG references through quality-aware trial selection. Noisy inputs are then generated by injecting one or more contaminant signals at controlled SNRs. This paired design allows all signal-level and feature-level metrics to be computed against a known clean reference.
+    </p>
+
+    <div class="formula-box">
+      <div class="formula-title">Noise mixing rule</div>
+      <div class="formula">y = c + &Sigma;<sub>i=1</sub><sup>k</sup> &alpha;<sub>i</sub> n<sub>i</sub>, &nbsp;&nbsp;
+      &alpha;<sub>i</sub> = &radic;( ||c||<sub>2</sub><sup>2</sup> / ( k ||n<sub>i</sub>||<sub>2</sub><sup>2</sup> ) &middot; 10<sup>-&eta;/10</sup> )</div>
+      <div class="formula-note">Here, c is the clean sEMG segment, n<sub>i</sub> is the i-th contaminant, k is the number of contaminant types, and &eta; is the target SNR in dB.</div>
+    </div>
+
+    <div class="method-grid">
+      <div class="method-card">
+        <span class="tag tag-method">Classical baselines</span>
+        <h3>Signal-processing denoisers</h3>
+        <div class="meta">
+          Classical baselines provide interpretable reference points for fixed filtering and decomposition-based denoising.
+        </div>
+        <ul>
+          <li>High-pass IIR filtering</li>
+          <li>Empirical mode decomposition</li>
+          <li>Complete ensemble EMD with adaptive noise</li>
+          <li>Variational mode decomposition</li>
+        </ul>
+      </div>
+
+      <div class="method-card">
+        <span class="tag tag-method">Neural baselines</span>
+        <h3>Learning-based denoisers</h3>
+        <div class="meta">
+          Neural denoisers are trained under the same corpus, online mixing strategy, optimizer family, and epoch budget.
+        </div>
+        <ul>
+          <li>FCN</li>
+          <li>SDEMG</li>
+          <li>MSEMG</li>
+          <li>TrustEMG-Net</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<section id="results">
+  <p class="section-label">Experiments</p>
+  <h2>Main results</h2>
+  <p>
+    The table summarizes overall denoising performance across signal reconstruction, feature preservation,
+    and downstream utility. Higher is better for SNRimp, accuracy, and F1; lower is better for RMSE, PRD, LSD,
+    and feature reconstruction errors.
+  </p>
+
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">Method</th>
+          <th colspan="4">Signal reconstruction</th>
+          <th colspan="5">Feature preservation</th>
+          <th colspan="4">Downstream utility</th>
+        </tr>
+        <tr class="sub">
+          <th>SNRimp<br>(dB) ↑</th>
+          <th>RMSE<br>(10<sup>-5</sup>) ↓</th>
+          <th>PRD<br>(%) ↓</th>
+          <th>LSD<br>(dB) ↓</th>
+          <th>RMSE-ARV<br>(10<sup>-5</sup>) ↓</th>
+          <th>RMSE-ZCR<br>(s<sup>-1</sup>) ↓</th>
+          <th>RMSE-MNF<br>(Hz) ↓</th>
+          <th>RMSE-MDF<br>(Hz) ↓</th>
+          <th>RMSE-Kurt. ↓</th>
+          <th>Gesture Acc.<br>(%) ↑</th>
+          <th>Gesture F1<br>(%) ↑</th>
+          <th>Fatigue Acc.<br>(%) ↑</th>
+          <th>Fatigue F1<br>(%) ↑</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="model-name">HP</td>
+          <td>1.27</td><td>5.44</td><td>121.80</td><td>0.662</td>
+          <td>2.69</td><td>83.64</td><td>32.78</td><td>40.48</td><td>2.59</td>
+          <td>65.82</td><td>61.60</td><td>42.78</td><td>39.49</td>
+        </tr>
+        <tr>
+          <td class="model-name">EMD</td>
+          <td>0.34</td><td>5.45</td><td>119.58</td><td>0.593</td>
+          <td>2.68</td><td>107.91</td><td>31.90</td><td>44.38</td><td>7.31</td>
+          <td>62.24</td><td>57.60</td><td>40.93</td><td>34.93</td>
+        </tr>
+        <tr>
+          <td class="model-name">CEEMDAN</td>
+          <td>0.46</td><td>5.30</td><td>116.57</td><td>0.581</td>
+          <td>2.50</td><td>98.47</td><td>32.63</td><td>46.33</td><td>4.25</td>
+          <td>61.12</td><td>57.80</td><td>40.89</td><td>39.75</td>
+        </tr>
+        <tr>
+          <td class="model-name">VMD</td>
+          <td>0.31</td><td>10.00</td><td>120.02</td><td>0.624</td>
+          <td>5.42</td><td>98.48</td><td>36.97</td><td>64.16</td><td>3.16</td>
+          <td>62.73</td><td>59.24</td><td>38.94</td><td>34.93</td>
+        </tr>
+        <tr>
+          <td class="model-name">FCN</td>
+          <td>6.95</td><td>2.41</td><td>54.07</td><td>0.224</td>
+          <td>0.75</td><td>47.59</td><td>16.92</td><td>25.17</td><td>3.23</td>
+          <td>67.24</td><td>63.81</td><td class="best">61.60</td><td class="best">61.70</td>
+        </tr>
+        <tr>
+          <td class="model-name">SDEMG</td>
+          <td>5.69</td><td>2.94</td><td>65.95</td><td>0.272</td>
+          <td>0.80</td><td>51.09</td><td>16.58</td><td>28.31</td><td class="best">2.96</td>
+          <td>68.46</td><td class="best">66.11</td><td>57.55</td><td>57.68</td>
+        </tr>
+        <tr>
+          <td class="model-name">MSEMG</td>
+          <td>7.24</td><td>2.41</td><td>53.91</td><td>0.230</td>
+          <td>0.78</td><td class="best">45.82</td><td class="best">14.88</td><td class="best">25.05</td><td>3.30</td>
+          <td>68.04</td><td>65.31</td><td>58.84</td><td>58.94</td>
+        </tr>
+        <tr>
+          <td class="model-name">TrustEMG-Net</td>
+          <td class="best">7.72</td><td class="best">2.27</td><td class="best">50.72</td><td class="best">0.213</td>
+          <td class="best">0.74</td><td>47.87</td><td>16.15</td><td>25.16</td><td class="best">2.96</td>
+          <td class="best">68.52</td><td>65.59</td><td>60.05</td><td>60.22</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="table-note">Bold marks the best value per metric. Results are macro-averaged under the benchmark protocol.</p>
+
+  <div class="result-callout">
+    <div class="callout">
+      <h3>Signal-level ranking is not the whole story</h3>
+      <p>TrustEMG-Net is strongest on most reconstruction metrics, but MSEMG better preserves several frequency-related descriptors. This supports the benchmark's multi-axis design.</p>
+    </div>
+    <div class="callout">
+      <h3>Downstream recovery remains incomplete</h3>
+      <p>Denoising improves task performance relative to noisy inputs, yet the clean-reference gap remains. This is especially relevant for severe contamination and task-specific sEMG patterns.</p>
+    </div>
+  </div>
+
+  <div class="figure-box">
+    <div class="figure-media">
+      <img src="figs/fig2_snr.png" alt="SNR-stratified denoising robustness" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+      <div class="figure-fallback">
+        Place your SNR robustness plot here as <strong>figs/fig2_snr.png</strong>.
+      </div>
+    </div>
+    <div class="figure-caption">
+      Figure 2. Performance as a function of input SNR. The stratified view is useful for detecting low-SNR failure modes that are hidden by aggregate averages.
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<div class="bg-wrap">
+  <div class="bg-inner">
+    <p class="section-label">Key Findings</p>
+    <h2>What CLEANSEMG reveals</h2>
+    <div class="finding-grid">
+      <div class="finding-card">
+        <div class="eyebrow">Finding 01</div>
+        <h3>Neural denoisers outperform classical baselines</h3>
+        <p>Across most reconstruction and feature-preservation metrics, neural methods substantially improve over fixed filtering and decomposition-based denoising.</p>
+      </div>
+      <div class="finding-card">
+        <div class="eyebrow">Finding 02</div>
+        <h3>Reconstruction and feature preservation diverge</h3>
+        <p>A model can achieve strong waveform recovery while still altering zero-crossing or frequency descriptors used by downstream sEMG analysis.</p>
+      </div>
+      <div class="finding-card">
+        <div class="eyebrow">Finding 03</div>
+        <h3>Downstream performance is task dependent</h3>
+        <p>Gesture recognition and fatigue classification rank denoisers differently, indicating that application-level evaluation is necessary.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<section id="limitations">
+  <p class="section-label">Scope</p>
+  <h2>Limitations and future extensions</h2>
+  <p>
+    CLEANSEMG is intended as an extensible benchmark. The current release emphasizes controlled, reproducible,
+    paired evaluation, but several practical dimensions remain open for future benchmark iterations.
+  </p>
+
+  <div class="limits-grid">
+    <div class="limit-card">
+      <h3>Controlled paired contamination</h3>
+      <p>Synthetic mixing enables clean-reference metrics, but cannot fully reproduce all real-world artifact mechanisms such as sweat-induced impedance changes or electrode displacement.</p>
+    </div>
+    <div class="limit-card">
+      <h3>Quality-control dependence</h3>
+      <p>The clean corpus depends on QC thresholds inherited from prior sEMG signal-quality protocols. Future sensitivity analysis should test how thresholds affect ranking.</p>
+    </div>
+    <div class="limit-card">
+      <h3>Single-channel scope</h3>
+      <p>The benchmark isolates temporal denoising ability but does not yet exploit spatial correlations across multi-electrode or high-density sEMG recordings.</p>
+    </div>
+    <div class="limit-card">
+      <h3>Deployment metrics not yet primary</h3>
+      <p>Runtime, model size, memory usage, and latency should be added for wearable, embedded, and real-time sEMG systems.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<div class="bg-wrap" id="references">
+  <div class="bg-inner">
+    <p class="section-label">Reference</p>
+    <h2>Related work and citation</h2>
+    <p>
+      The project citation should be added after formal publication. Until then, related work is organized by dataset, denoising model, and downstream-task reference.
+    </p>
+
+    <div class="citation-grid">
+      <div class="citation-card">
+        <header>
+          <span class="tag tag-main">Datasets</span>
+          <h3>sEMG corpora</h3>
+        </header>
+        <div class="body">
+          <div class="cite-item">
+            <div class="cite-title">Ninapro</div>
+            <div class="cite-meta">Atzori, M. et al. <em>Scientific Data</em>, 2014. <a href="https://doi.org/10.1038/sdata.2014.53" target="_blank" rel="noopener">doi:10.1038/sdata.2014.53</a></div>
+          </div>
+          <div class="cite-item">
+            <div class="cite-title">Cerqueira fatigue dataset</div>
+            <div class="cite-meta">Cerqueira, S. et al. Zenodo, 2024. <a href="https://doi.org/10.5281/zenodo.14182446" target="_blank" rel="noopener">doi:10.5281/zenodo.14182446</a></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="citation-card">
+        <header>
+          <span class="tag tag-method">Denoisers</span>
+          <h3>Model references</h3>
+        </header>
+        <div class="body">
+          <div class="cite-item">
+            <div class="cite-title">TrustEMG-Net</div>
+            <div class="cite-meta">Wang, K.-C. et al. <em>IEEE JBHI</em>, 2025. <a href="https://doi.org/10.1109/JBHI.2024.3475817" target="_blank" rel="noopener">doi:10.1109/JBHI.2024.3475817</a></div>
+          </div>
+          <div class="cite-item">
+            <div class="cite-title">MSEMG</div>
+            <div class="cite-meta">Liu, Y.-T. et al. <em>ICASSP</em>, 2025. <a href="https://doi.org/10.1109/ICASSP49660.2025.10887547" target="_blank" rel="noopener">doi:10.1109/ICASSP49660.2025.10887547</a></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="citation-card">
+        <header>
+          <span class="tag tag-down">Downstream</span>
+          <h3>Task references</h3>
+        </header>
+        <div class="body">
+          <div class="cite-item">
+            <div class="cite-title">STCNet</div>
+            <div class="cite-meta">Yang et al. <em>Computers in Biology and Medicine</em>, 2024. <a href="https://doi.org/10.1016/j.compbiomed.2024.109525" target="_blank" rel="noopener">doi:10.1016/j.compbiomed.2024.109525</a></div>
+          </div>
+          <div class="cite-item">
+            <div class="cite-title">Self-perceived fatigue assessment</div>
+            <div class="cite-meta">Fatigue classification uses labels from the Cerqueira dataset and reports accuracy and macro-F1 across classifiers.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p>
+    <a href="https://github.com/HowardShih/sEMGBench" target="_blank" rel="noopener">GitHub</a>
+    <span class="fsep">·</span>
+    <a href="https://huggingface.co/datasets/HowardShih/sEMGBench" target="_blank" rel="noopener">Hugging Face</a>
+    <span class="fsep">·</span>
+    <a href="https://bio-asplab.citi.sinica.edu.tw/" target="_blank" rel="noopener">Bio-ASP Lab</a>
+  </p>
+  <p style="font-size:12px;">Institute of Information Science, Academia Sinica</p>
+</footer>
+</body>
+</html>
