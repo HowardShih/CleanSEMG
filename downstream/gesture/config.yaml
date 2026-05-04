@@ -1,33 +1,50 @@
 # ==============================================================================
-# STCNet Downstream Task Configuration
+# CleanSEMG — STCNet Gesture Recognition Downstream Config
+# CleanSEMG path: downstream/gesture/config.yaml
+#
+# All relative paths are resolved from CLEANSEMG_ROOT.
+# Set: export CLEANSEMG_ROOT=/path/to/CleanSEMG
+#      export DATA_ROOT=/path/to/your/data
 # ==============================================================================
 
-# Project paths
-project_root: "${CLEANSEMG_ROOT}"
-stcnet_root: "${CLEANSEMG_ROOT}/downstream_tasks/stcnet"
+# ── Inputs from main pipeline ─────────────────────────────────────────────────
+qc_index: "outputs/preprocessed/DB2/logs/qc_index.csv"
+test_npz:  "outputs/test_data/test_combined.npz"
 
-# Input paths (from main project)
-qc_index: "${CLEANSEMG_ROOT}/outputs/preprocessed/DB2/logs/qc_index.csv"
+# ── Raw data (user must provide) ──────────────────────────────────────────────
 db2_raw: "${DATA_ROOT}/DB2"
-mecge_model: "${CLEANSEMG_ROOT}/outputs/weights/crossDB_online_mix_v621_best.pth"
-noise_library: "${CLEANSEMG_ROOT}/outputs/noise/sEMG_noise_train"
 
-# Output paths
-denoised_output: "./outputs/denoised_data/DB2"
-stcnet_pkl_output: "./STCNet/pkl"
+# ── Model weights ─────────────────────────────────────────────────────────────
+weights_dir: "outputs/weights_baseline"
+tradition_params: "outputs/weights_tradition/tradition_params.json"
 
-# Processing options
-device: "cuda"  # cuda or cpu
-compute_metrics: true
-max_files_test: null  # Set to integer for testing (e.g., 5)
+# ── STCNet trained model ──────────────────────────────────────────────────────
+stcnet_model: "downstream/gesture/STCNet/save/CE/nina2_STCNet_models/best_model.pth"
 
-# Bandpass filter (as per meeting decision: 20-500 Hz)
+# ── Outputs (all relative to CLEANSEMG_ROOT) ─────────────────────────────────
+output:
+  noisy_mat:        "outputs/downstream/gesture/noisy/DB2"
+  denoised_prefix:  "outputs/downstream/gesture"
+  pkl_prefix:       "downstream/gesture/STCNet/pkl"
+  results:          "outputs/downstream/gesture/results"
+  logs:             "outputs/downstream/gesture/logs"
+
+# ── Runtime settings ──────────────────────────────────────────────────────────
+device:     "cuda"
+gpu_id:     "0"
+batch_size: 16
+dataset:    "nina2"
+
+# ── Denoisers to evaluate ─────────────────────────────────────────────────────
+classical_methods: ["hp", "emd", "vmd", "ceemdan"]
+neural_models:     ["FCN", "SDEMG", "MSEMG", "TrustEMGNet_RM"]
+
+# ── Preprocessing ─────────────────────────────────────────────────────────────
 bandpass:
-  low: 20.0
-  high: 500.0
+  low:   20.0
+  high:  500.0
   order: 4
 
-# STCNet preprocessing
-stcnet:
-  normalize_method: "minmax"  # minmax to [0, 1]
-  max_sampling_ratio: 10  # 1000 Hz → 100 Hz
+stcnet_preprocessing:
+  normalize:          "minmax"
+  max_sampling_ratio: 10    # 1000 Hz → 100 Hz

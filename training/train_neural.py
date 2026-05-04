@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-sEMG Baseline Waveform Model Training (v1.1)
-Supports: TrustEMGNet variants, FCN, CNN_waveform, SDEMG
+CleanSEMG — Neural Denoiser Training
+CleanSEMG path: training/train_neural.py
 
-Data pipeline is IDENTICAL to train.py (MECGE):
-  - Same segments (outputs/segments/...)
-  - Same OnlineNoiseMixer with same config
-  - Same noisy-scale normalization (Q99 from noisy_raw)
-  - Same clip_range
+Trains waveform-based sEMG denoisers (FCN, CNN_waveform, MSEMG, SDEMG,
+TrustEMGNet variants) using online noise mixing.
 
-Difference from v1.0:
-  - SDEMG uses diffusion MSE loss (HAS_DIFFUSION_LOSS flag)
-    instead of plain L1 waveform loss.
-  - All other models unchanged.
+Training pipeline:
+  1. Load clean segments from outputs/segments/
+  2. Online noise mixing via noise/noise_generator.py
+  3. Noisy-scale normalization (Q99 of noisy signal)
+  4. L1 waveform loss (or diffusion MSE for SDEMG)
 
-Outputs to: outputs/weights_baseline/{model_name}/
+Output: outputs/weights_baseline/{model_name}/{model_name}_best.pth
+
+Usage:
+    python training/train_neural.py \\
+        --config           configs/config.yaml \\
+        --baseline-config  configs/baseline_train_config.yaml \\
+        --model            TrustEMGNet_RM \\
+        --segments-root    outputs/segments/data_crossDB_seg2s \\
+        --noise-root       outputs/noise/sEMG_noise_train \\
+        --weights          outputs/weights_baseline
 """
 
 import os
@@ -34,12 +41,12 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, get_worker_info
 from tqdm import tqdm
 
-# ── resolve paths ─────────────────────────────────────────────────────────────
-SEMG_ROOT = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SEMG_ROOT)
+# ── resolve project root ──────────────────────────────────────────────────────
+CLEANSEMG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, CLEANSEMG_ROOT)
 
-from noise import OnlineNoiseMixer
-from baseline_models import BASELINE_MODEL_REGISTRY
+from noise.noise_generator import OnlineNoiseMixer
+from denoising import BASELINE_MODEL_REGISTRY
 
 
 # ============================================================================

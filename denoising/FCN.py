@@ -1,6 +1,13 @@
 """
 FCN (Fully Convolutional Network) for waveform-based sEMG denoising.
-${CLEANSEMG_ROOT}/baseline_models/FCN.py
+
+Reference: adapted from TrustEMG-Net codebase (Wang et al., JBHI 2025).
+
+CleanSEMG path: denoising/FCN.py
+
+Shape contract:
+    Input:  [B, L]  float32 waveform (e.g. L=2000 at 1 kHz)
+    Output: [B, L]  float32 denoised waveform
 """
 import torch
 import torch.nn as nn
@@ -36,7 +43,7 @@ class _deconv_1d(nn.Module):
 
 class FCN(nn.Module):
     """
-    Encoder-decoder FCN.
+    Encoder-decoder Fully Convolutional Network for sEMG denoising.
     Input:  [B, L]  (waveform, e.g. L=2000)
     Output: [B, L]
     """
@@ -60,7 +67,6 @@ class FCN(nn.Module):
         )
 
     def forward(self, emg):
-        # emg: [B, L]
-        f   = self.encoder(emg.unsqueeze(1))   # [B, feature_dim, T']
-        out = self.decoder(f)                  # [B, 1, ~L]
-        return out[:, :, :emg.shape[1]].squeeze(1)  # [B, L]
+        f   = self.encoder(emg.unsqueeze(1))
+        out = self.decoder(f)
+        return out[:, :, :emg.shape[1]].squeeze(1)

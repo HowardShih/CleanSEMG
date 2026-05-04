@@ -1,102 +1,94 @@
 # ==============================================================================
-# Baseline Models Training Config
-# ${CLEANSEMG_ROOT}/baseline_train_config.yaml
-# Independent from config.yaml (MECGE/SSEMG-Net).
+# CleanSEMG — Neural Denoiser Training Hyperparameters
+# CleanSEMG path: configs/baseline_train_config.yaml
 #
-# Per-model hyperparams are under baseline_train.models.<ModelName>.
-# Common defaults are under baseline_train.defaults.
+# Per-model hyperparameters for training all neural denoisers.
+# Common defaults under baseline_train.defaults.
+# Per-model overrides under baseline_train.models.<ModelName>.
 #
 # Sources:
-#   TrustEMGNet_RM / UNetonly : TrustEMG-Net paper (JBHI 2025)
-#     - Adam, L1, batch=256, lr: 0.01→0.001(ep3)→0.0001(ep30), patience=15
-#   MSEMG                     : MSEMG paper (ICASSP 2025)
-#   FCN / CNN_waveform        : original FCN paper convention
-#     - AdamW, L1, batch=64, lr=1e-3
-#   SDEMG                     : Score-based Diffusion Model (ICASSP 2024)
-#     - Adam, diffusion MSE (pred_noise), batch=64, lr=1e-4
-#     - ReduceLROnPlateau factor=0.5, patience=4
-#     - NOTE: val/train loss is diffusion MSE, not comparable to L1 models
+#   TrustEMGNet_RM   : Wang et al., IEEE JBHI 29(4):2506-2520, 2025
+#                      doi: 10.1109/JBHI.2024.3475817
+#                      Adam, L1, batch=256, lr: 1e-2→1e-3(ep3)→1e-4(ep30)
+#   MSEMG            : Adapted from EMG-MAMBA (ICASSP 2025)
+#   FCN              : AdamW, L1, batch=64, lr=1e-3
+#   CNN_waveform     : AdamW, L1, batch=64, lr=1e-3
+#   SDEMG            : Liu et al., ICASSP 2024
+#                      Adam, diffusion MSE (pred_noise), batch=64, lr=1e-4
+#                      NOTE: loss is diffusion MSE, not comparable to L1 models
 # ==============================================================================
 
 baseline_train:
 
   defaults:
-    epochs:       150
-    batch_size:   64
-    lr:           1.0e-3
-    lr_schedule:  constant       # constant | step | plateau
-    patience:     20             # early stopping
-    clip_grad:    10.0
-    num_workers:  4
+    epochs:          150
+    batch_size:      64
+    lr:              1.0e-3
+    lr_schedule:     plateau      # plateau | step | constant
+    patience:        20
+    clip_grad:       10.0
+    num_workers:     4
     prefetch_factor: 4
-    pin_memory:   true
-    cache_noise:  true
+    pin_memory:      true
+    cache_noise:     true
 
-  # ── Per-model overrides ────────────────────────────────────────────────────
   models:
 
     TrustEMGNet_RM:
-      epochs:       200
-      batch_size:   256
-      lr:           1.0e-2
-      lr_schedule:  step
+      epochs:             200
+      batch_size:         256
+      lr:                 1.0e-2
+      lr_schedule:        step
       lr_step_milestones: [3, 30]
-      lr_step_gamma: 0.1
-      patience:     15
-      clip_grad:    1.0
+      lr_step_gamma:      0.1
+      patience:           15
+      clip_grad:          1.0
 
     TrustEMGNet_UNetonly:
-      epochs:       200
-      batch_size:   256
-      lr:           1.0e-2
-      lr_schedule:  step
+      epochs:             200
+      batch_size:         256
+      lr:                 1.0e-2
+      lr_schedule:        step
       lr_step_milestones: [3, 30]
-      lr_step_gamma: 0.1
-      patience:     15
-      clip_grad:    1.0
+      lr_step_gamma:      0.1
+      patience:           15
+      clip_grad:          1.0
 
     MSEMG:
-      epochs:       200
-      batch_size:   64
-      lr:           1.0e-4
-      adam_betas:   [0.9, 0.99]
-      optimizer:    adam
-      lr_schedule:  plateau
-      lr_plateau_factor: 0.8
+      epochs:              200
+      batch_size:          64
+      lr:                  1.0e-4
+      adam_betas:          [0.9, 0.99]
+      optimizer:           adam
+      lr_schedule:         plateau
+      lr_plateau_factor:   0.8
       lr_plateau_patience: 5
-      patience:     20
-      clip_grad:    1.0
+      patience:            20
+      clip_grad:           1.0
 
     FCN:
-      epochs:       150
-      batch_size:   64
-      lr:           1.0e-3
-      lr_schedule:  plateau
-      patience:     20
-      clip_grad:    10.0
+      epochs:     150
+      batch_size: 64
+      lr:         1.0e-3
+      patience:   20
+      clip_grad:  10.0
 
     CNN_waveform:
-      epochs:       150
-      batch_size:   64
-      lr:           1.0e-3
-      lr_schedule:  plateau
-      patience:     20
-      clip_grad:    10.0
+      epochs:     150
+      batch_size: 64
+      lr:         1.0e-3
+      patience:   20
+      clip_grad:  10.0
 
-    # ── SDEMG (score-based diffusion model) ───────────────────────────────
-    # Follows Trainer1D defaults from the original SDEMG codebase:
-    #   Adam(betas=(0.9,0.99)), lr=1e-4, ReduceLROnPlateau(factor=0.5, patience=4)
-    # Loss: diffusion MSE in noise-prediction space (NOT L1 waveform).
-    # Inference runs T=50 reverse diffusion steps — expect slower eval.
     SDEMG:
-      epochs:       100
-      batch_size:   64
-      lr:           1.0e-4
-      optimizer:    adam
-      adam_betas:   [0.9, 0.99]
-      lr_schedule:  plateau
+      epochs:              100
+      batch_size:          64
+      lr:                  1.0e-4
+      optimizer:           adam
+      adam_betas:          [0.9, 0.99]
+      lr_schedule:         plateau
       lr_plateau_factor:   0.5
       lr_plateau_patience: 4
-      patience:     20
-      clip_grad:    1.0
-      num_workers:  4
+      patience:            20
+      clip_grad:           1.0
+      num_workers:         4
