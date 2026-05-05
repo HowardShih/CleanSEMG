@@ -1,18 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MSEMG (EMG-MAMBA) baseline model for sEMG denoising.
-
-${CLEANSEMG_ROOT}/baseline_models/MSEMG.py
-
-Shape contract (matches other baseline models):
-  Input:  [B, L]   (waveform, same as TrustEMGNet / FCN / CNN_waveform)
-  Output: [B, L]
-
-Internal forward uses [B, 1, L] as required by Conv1d(1, feats, ...).
-The public forward() handles unsqueeze / squeeze automatically so
-train_baseline.py and inference_baseline.py need no changes.
+MSEMG (EMG-MAMBA): Mamba-Based sEMG Denoising Network
+=======================================================
+ 
+Adapted from:
+    Liu, Yu-Tung, Kuan-Chen Wang, R. Chao, Sabato Marco Siniscalchi,
+    Ping-Chun Yeh, and Yu Tsao.
+    "MSEMG: Surface Electromyography Denoising with a Mamba-Based
+    Efficient Network."
+    IEEE ICASSP 2025, pp. 1–5.
+    DOI: https://doi.org/10.1109/ICASSP49660.2025.10887547
+ 
+Modifications for CLEANSEMG:
+  - Replaced Block import from mamba_ssm (signature changed across
+    versions ≥ 2.0) with a version-independent _MambaResidualBlock
+    that works with all mamba_ssm releases.
+  - Removed einops and torchsummary dependencies.
+  - Unified input/output interface: forward(x: [B, L]) → [B, L]
+    with automatic unsqueeze/squeeze.
+  - Bidirectional flag retained for completeness; benchmark uses
+    unidirectional (bidirectional=False) to match the original paper.
+ 
+Requirements: mamba-ssm (CUDA ≥ 11.8 required; Triton kernel).
+ 
+License: see the original paper/authors for licensing terms.
+         CLEANSEMG modifications are released under MIT License.
 """
+
 
 from functools import partial
 

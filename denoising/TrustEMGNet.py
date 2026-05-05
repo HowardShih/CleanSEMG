@@ -1,7 +1,31 @@
 """
-TrustEMGNet model variants (waveform-based denoising).
-${CLEANSEMG_ROOT}/baseline_models/TrustEMGNet.py
+TrustEMG-Net: U-Net + Transformer Residual Masking for sEMG Denoising
+======================================================================
+ 
+Adapted from:
+    Wang, Kuan-Chen, Kai-Chun Liu, Sheng-Yu Peng, and Yu Tsao.
+    "TrustEMG-Net: Using Representation-Masking Transformer with U-Net
+    for Surface Electromyography Enhancement."
+    IEEE Journal of Biomedical and Health Informatics, vol. 29, no. 4,
+    pp. 2506–2520, 2025.
+    DOI: https://doi.org/10.1109/JBHI.2024.3504378
+    arXiv: https://arxiv.org/abs/2410.03843
+    Code: https://github.com/eric-wang135/TrustEMG
+ 
+Modifications for CLEANSEMG:
+  - All model variants (TrustEMGNet_RM, TrustEMGNet_DM, TrustEMGNet_LSTM,
+    TrustEMGNet_UNetonly, TrustEMGNet_Skipall) are merged into a single
+    file for self-contained deployment.
+  - Unified input/output interface: forward(emg: [B, L]) → [B, L]
+    with automatic unsqueeze/squeeze.
+  - Attribute names kept identical to the original checkpoints so
+    pre-trained weights load without key remapping.
+  - Removed internal training utilities not needed for inference.
+ 
+License: see https://github.com/eric-wang135/TrustEMG for the original license.
+         CLEANSEMG modifications are released under MIT License.
 """
+
 import math
 import numpy as np
 import torch

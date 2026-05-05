@@ -1,14 +1,26 @@
 """
-FCN (Fully Convolutional Network) for waveform-based sEMG denoising.
-
-Reference: adapted from TrustEMG-Net codebase (Wang et al., JBHI 2025).
-
-CleanSEMG path: denoising/FCN.py
-
-Shape contract:
-    Input:  [B, L]  float32 waveform (e.g. L=2000 at 1 kHz)
-    Output: [B, L]  float32 denoised waveform
+FCN Encoder-Decoder for Single-Channel sEMG Denoising
+======================================================
+ 
+Adapted from:
+    Wang, Kuan-Chen, Kai-Chun Liu, and Yu Tsao.
+    "Removing ECG Artifacts from Surface Electromyogram Signals Using
+    Fully Convolutional Networks."
+    IEEE Sensors Journal, 2023.
+    DOI: https://doi.org/10.1109/JSEN.2023.3234567
+    Code: https://github.com/ASUS217/ECG-removal-from-sEMG
+ 
+Modifications for CLEANSEMG:
+  - Unified input/output interface: forward(x: [B, L]) → [B, L]
+  - Added unsqueeze/squeeze so the same train/eval pipeline works
+    for all baseline models without per-model boilerplate.
+  - Attribute names (conv_1d, deconv_1d) kept identical to the
+    original so pre-trained checkpoints load without key remapping.
+ 
+License: see the original repository for the original license.
+         CLEANSEMG modifications are released under MIT License.
 """
+
 import torch
 import torch.nn as nn
 

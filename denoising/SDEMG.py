@@ -1,27 +1,30 @@
 """
-SDEMG — Score-Based Diffusion Model for sEMG Denoising
+SDEMG: Score-Based Diffusion Model for sEMG Denoising
 =======================================================
-CleanSEMG path: denoising/SDEMG.py
-
-Self-contained implementation. No external SDEMG repo required.
-ConditionalModel and GaussianDiffusion1D are embedded directly.
-
-Reference:
-    Liu et al., "Score-based Generative Models for EMG Signal Denoising,"
-    ICASSP 2024.
-
-Shape contract (matches all other CleanSEMG baseline models):
-    noisy / clean : FloatTensor[B, L]   (no channel dim)
-    pred          : FloatTensor[B, L]
-
-Training:
-    Detected by train_neural.py via HAS_DIFFUSION_LOSS = True.
-    Call: loss = model.compute_diffusion_loss(clean, noisy)
-
-Inference:
-    Runs T reverse-diffusion steps conditioned on the noisy input.
-    Call: pred = model(noisy)
+ 
+Adapted from:
+    Liu, Yu-Tung, Kuan-Chen Wang, Kai-Chun Liu, Sheng-Yu Peng, and Yu Tsao.
+    "SDEMG: Score-Based Diffusion Model for Surface Electromyographic
+    Signal Denoising."
+    IEEE ICASSP 2024, pp. 1736–1740.
+    DOI: https://doi.org/10.1109/ICASSP48485.2024.10446154
+    Code: https://github.com/tonyliu0910/SDEMG
+ 
+Modifications for CLEANSEMG:
+  - ConditionalModel (deep_filter_model.py) and GaussianDiffusion1D
+    (ddpm_1d.py) from the original repository are embedded directly
+    into this single file so no external clone is required.
+  - Removed torchsummary and einops dependencies.
+  - Removed the original __main__ block.
+  - Unified inference interface matching all other CLEANSEMG denoisers:
+      forward(noisy: [B, L]) → denoised: [B, L]
+  - Internal chunk-wise normalization (Q99 scale) applied before
+    diffusion inference and reversed after, consistent with training.
+ 
+License: see https://github.com/tonyliu0910/SDEMG for the original license.
+         CLEANSEMG modifications are released under MIT License.
 """
+
 
 from __future__ import annotations
 
