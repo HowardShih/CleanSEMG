@@ -13,13 +13,13 @@ CLEANSEMG is the first standardized benchmark for evaluating single-channel surf
 
 | | Details |
 |---|---|
-| **Datasets** | Ninapro DB2–DB10 (gesture); Cerqueira (fatigue) |
+| **Datasets** | Ninapro; Muscle Fatigue Analysis |
 | **Noise types** | PLI, ECG artifact, MOA (motion artifact), WGN, Colored (pink/brown) |
 | **Classical methods** | HP (high-pass filter), EMD, CEEMDAN, VMD |
 | **Neural methods** | FCN, SDEMG, MSEMG (EMG-MAMBA), TrustEMG-Net |
 | **Signal metrics** | SNRimp, RMSE, PRD, LSD |
 | **Feature metrics** | Error in ARV, ZCR, MNF, MDF, Kurtosis |
-| **Downstream tasks** | Hand gesture recognition (STCNet), Fatigue classification (RBF-SVM + Dilated CNN) |
+| **Downstream tasks** | Hand gesture recognition (STCNet), Muscle Fatigue classification (SVM, CNN) |
 
 ---
 
