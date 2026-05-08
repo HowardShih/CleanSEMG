@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ${CLEANSEMG_ROOT}/noise.py
 """
-sEMG Noise Generation and Online Mixing Module
-Version 6.3.0
-${CLEANSEMG_ROOT}/noise.py
+sEMG Noise Generation and Online Mixing Module  v6.8.0
 
-Changes from 6.2.1:
-- ColorNoiseGenerator: saves files as Color_pink_i.npy / Color_brown_i.npy
-  so inference can distinguish pink vs brown in per-type metrics.
-- OnlineNoiseMixer: still loads ALL Color/* files under key "Color",
-  so the 5-type framework (PLI/ECG/MOA/WGN/Color) is unchanged.
-- mix() info dict now always includes "noise_paths" so inference can
-  reconstruct pink/brown split from filename.
+WGN power allocation (same rule as generate_test_data.py v6.8.0):
+
+  Normal case (per-component SNR >= floor):
+      All k types receive equal power.
+
+  WGN capping (k>=2, per-component SNR < floor):
+      WGN  → fixed at WGN_COMPONENT_SNR_MIN_DB (-5 dB) component power
+      Others → share remaining power equally
+      Total noise preserved → SNR label correct
+
+  k=1 WGN below floor:
+      WGN excluded from pool; another type chosen instead.
+
+Training SNR sampling:
+  Total SNR is now sampled from the full range [snr_train_min, snr_train_max]
+  regardless of whether WGN is present. The WGN power cap is applied
+  during mixing, not at sampling time. This gives the model exposure to
+  WGN across all SNR levels (always at >= -5 dB component strength).
 """
 
 import os
@@ -26,10 +34,11 @@ from fractions import Fraction
 from collections import Counter, defaultdict
 
 import numpy as np
-from tqdm import tqdm
 from scipy.signal import butter, filtfilt, resample_poly, iirnotch
 import scipy.io
 import wfdb
+
+WGN_COMPONENT_SNR_MIN_DB = -5.0   # must match generate_test_data.py v6.8.0
 
 
 # ============================================================================
@@ -37,138 +46,84 @@ import wfdb
 # ============================================================================
 def seed_everything(seed: int) -> None:
     seed = int(seed) & 0xffffffff
-    random.seed(seed)
-    np.random.seed(seed)
+    random.seed(seed); np.random.seed(seed)
 
 
 # ============================================================================
-# Signal Processing Utilities
+# Signal processing utilities
 # ============================================================================
-def apply_bandpass_filter(x: np.ndarray, fs: float, low: float, high: float, order: int = 4) -> np.ndarray:
+def apply_bandpass_filter(x, fs, low, high, order=4):
     x = np.asarray(x, dtype=np.float64).reshape(-1)
-    min_len = max(64, 3 * order + 1)
-    if x.size < min_len:
-        return x
-    nyq = fs / 2.0
-    high_eff = min(high, nyq * 0.99)
-    if high_eff <= low:
-        return x
-    b, a = butter(order, [low / nyq, high_eff / nyq], btype="band")
+    if x.size < max(64, 3*order+1): return x
+    nyq = fs / 2.0; high = min(high, nyq*0.99)
+    if high <= low: return x
+    b, a = butter(order, [low/nyq, high/nyq], btype="band")
     return filtfilt(b, a, x)
 
-
-def apply_lowpass_filter(x: np.ndarray, fs: float, cutoff: float = 200.0, order: int = 4) -> np.ndarray:
+def apply_lowpass_filter(x, fs, cutoff=200.0, order=4):
     x = np.asarray(x, dtype=np.float64).reshape(-1)
-    min_len = max(64, 3 * order + 1)
-    if x.size < min_len:
-        return x
+    if x.size < max(64, 3*order+1): return x
     nyq = fs / 2.0
-    cutoff_eff = min(cutoff, nyq * 0.99)
-    b, a = butter(order, cutoff_eff / nyq, btype="low")
+    b, a = butter(order, min(cutoff, nyq*0.99)/nyq, btype="low")
     return filtfilt(b, a, x)
 
-
-def apply_notch_filter(x: np.ndarray, fs: float, freq: float = 50.0, q: float = 30.0) -> np.ndarray:
+def apply_notch_filter(x, fs, freq=50.0, q=30.0):
     x = np.asarray(x, dtype=np.float64).reshape(-1)
-    if x.size < 128:
-        return x
+    if x.size < 128: return x
     b, a = iirnotch(freq, q, fs=fs)
     return filtfilt(b, a, x)
 
-
-def resample_signal_poly(x: np.ndarray, from_fs: int, to_fs: int) -> np.ndarray:
+def resample_signal_poly(x, from_fs, to_fs):
     x = np.asarray(x, dtype=np.float64).reshape(-1)
-    if x.size == 0 or from_fs == to_fs:
-        return x
+    if x.size == 0 or from_fs == to_fs: return x
     frac = Fraction(to_fs, from_fs).limit_denominator(1000)
     return resample_poly(x, frac.numerator, frac.denominator).astype(np.float64)
 
-
-def ensure_length(x: np.ndarray, L: int) -> np.ndarray:
+def ensure_length(x, L):
     x = np.asarray(x, dtype=np.float64).reshape(-1)
-    if x.size == 0:
-        return np.zeros((L,), dtype=np.float64)
-    if x.size >= L:
-        return x[:L]
-    rep = (L // x.size) + 2
-    y = np.tile(x, rep)
-    return y[:L]
+    if x.size == 0: return np.zeros(L, dtype=np.float64)
+    if x.size >= L: return x[:L]
+    return np.tile(x, (L//x.size)+2)[:L]
 
 
 # ============================================================================
 # Config helpers
 # ============================================================================
-def get_output_base(config: Dict) -> str:
-    root = config["paths"]["root"]
-    base = config["paths"]["output"]["base"]
+def get_output_base(config):
+    root = config["paths"]["root"]; base = config["paths"]["output"]["base"]
     return base if os.path.isabs(base) else os.path.join(root, base)
 
+def _get_bp_params(config):
+    bp = config.get("preprocessing",{}).get("bandpass",{})
+    return (bool(bp.get("enabled",True)), float(bp.get("low_cutoff",20.0)),
+            float(bp.get("high_cutoff",500.0)), int(bp.get("order",4)))
 
-def _get_bp_params(config: Dict) -> Tuple[bool, float, float, int]:
-    bp = config.get("preprocessing", {}).get("bandpass", {})
-    enabled = bool(bp.get("enabled", True))
-    low = float(bp.get("low_cutoff", 20.0))
-    high = float(bp.get("high_cutoff", 500.0))
-    order = int(bp.get("order", 4))
-    return enabled, low, high, order
-
-
-def _get_notch_params(config: Dict) -> Tuple[bool, float, float]:
-    nc = config.get("preprocessing", {}).get("notch", {})
-    enabled = bool(nc.get("enabled", True))
-    freq = float(nc.get("freq_hz", 50.0))
-    q = float(nc.get("q", 30.0))
-    return enabled, freq, q
+def _get_notch_params(config):
+    nc = config.get("preprocessing",{}).get("notch",{})
+    return (bool(nc.get("enabled",True)), float(nc.get("freq_hz",50.0)), float(nc.get("q",30.0)))
 
 
 # ============================================================================
-# ECG split helpers
+# ECG split
 # ============================================================================
-def _ecg_split_file(config: Dict) -> str:
-    out_base = get_output_base(config)
-    d = os.path.join(out_base, "noise")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "ecg_split.json")
+def _ecg_split_file(config):
+    d = os.path.join(get_output_base(config),"noise"); os.makedirs(d,exist_ok=True)
+    return os.path.join(d,"ecg_split.json")
 
-
-def get_or_create_ecg_test_ids(config: Dict, ecg_ids: List[int]) -> Tuple[List[int], List[int]]:
-    split_path = _ecg_split_file(config)
-    ecg_cfg = config.get("noise", {}).get("generation", {}).get("ecg", {})
-    test_record_count = int(ecg_cfg.get("test_record_count", 4))
-    seed = int(config.get("project", {}).get("random_seed", 12345))
-
-    if os.path.exists(split_path):
+def get_or_create_ecg_test_ids(config, ecg_ids):
+    sp=_ecg_split_file(config); cfg=config.get("noise",{}).get("generation",{}).get("ecg",{})
+    cnt=int(cfg.get("test_record_count",4)); seed=int(config.get("project",{}).get("random_seed",12345))
+    if os.path.exists(sp):
         try:
-            with open(split_path, "r") as f:
-                obj = json.load(f)
-            saved_test = obj.get("test_ids", None)
-            saved_seed = obj.get("seed", None)
-            saved_count = obj.get("test_record_count", None)
-            if (isinstance(saved_test, list) and
-                    isinstance(saved_seed, int) and saved_seed == seed and
-                    isinstance(saved_count, int) and saved_count == test_record_count):
-                test_ids = [int(x) for x in saved_test]
-                train_ids = [rid for rid in ecg_ids if rid not in set(test_ids)]
-                print(f"[ECG Split] Loaded from: {split_path}")
-                return train_ids, test_ids
-        except Exception as e:
-            print(f"[WARN] Failed to load ECG split: {e}")
-
-    print(f"[ECG Split] Creating new split (seed={seed}, test_records={test_record_count})")
-    rng = random.Random(seed)
-    test_ids = rng.sample(list(ecg_ids), int(test_record_count))
-    train_ids = [rid for rid in ecg_ids if rid not in set(test_ids)]
-
-    with open(split_path, "w") as f:
-        json.dump({
-            "seed": seed,
-            "test_record_count": int(test_record_count),
-            "test_ids": test_ids,
-            "train_ids": train_ids,
-        }, f, indent=2)
-
-    print(f"  Saved to: {split_path}")
-    print(f"  Train records: {len(train_ids)}, Test records: {len(test_ids)}")
+            obj=json.load(open(sp))
+            if obj.get("seed")==seed and obj.get("test_record_count")==cnt:
+                test_ids=[int(x) for x in obj["test_ids"]]
+                return [r for r in ecg_ids if r not in set(test_ids)], test_ids
+        except: pass
+    rng=random.Random(seed); test_ids=rng.sample(list(ecg_ids),cnt)
+    train_ids=[r for r in ecg_ids if r not in set(test_ids)]
+    json.dump({"seed":seed,"test_record_count":cnt,"test_ids":test_ids,"train_ids":train_ids},
+              open(sp,"w"),indent=2)
     return train_ids, test_ids
 
 
@@ -176,326 +131,179 @@ def get_or_create_ecg_test_ids(config: Dict, ecg_ids: List[int]) -> Tuple[List[i
 # Noise Generators
 # ============================================================================
 class NoiseGenerator:
-    def __init__(self, target_fs: int, time_length: int, config: Dict):
-        self.target_fs = int(target_fs)
-        self.time_length = int(time_length)
-        self.L = self.target_fs * self.time_length
-
-        bp_enabled, bp_low, bp_high, bp_order = _get_bp_params(config)
-        self.bp_enabled = bp_enabled
-        self.bp_low = bp_low
-        self.bp_high = bp_high
-        self.bp_order = bp_order
-
-    def _bp(self, x: np.ndarray) -> np.ndarray:
+    def __init__(self, target_fs, time_length, config):
+        self.target_fs=int(target_fs); self.time_length=int(time_length)
+        self.L=self.target_fs*self.time_length
+        self.bp_enabled,self.bp_low,self.bp_high,self.bp_order=_get_bp_params(config)
+    def _bp(self, x):
         if self.bp_enabled:
-            return apply_bandpass_filter(
-                x, fs=self.target_fs, low=self.bp_low, high=self.bp_high, order=self.bp_order
-            )
-        return np.asarray(x, dtype=np.float64).reshape(-1)
-
+            return apply_bandpass_filter(x,self.target_fs,self.bp_low,self.bp_high,self.bp_order)
+        return np.asarray(x,dtype=np.float64).reshape(-1)
 
 class PLIGenerator(NoiseGenerator):
-    def generate(self, count: int, config: Dict) -> List[np.ndarray]:
-        pli_cfg = config.get("noise", {}).get("generation", {}).get("pli", {})
-        fundamentals = pli_cfg.get("fundamental_hz", [50])
-        drift_enabled = bool(pli_cfg.get("drift_enabled", True))
-        drift_range = float(pli_cfg.get("drift_range", 0.3))
-        H = int(pli_cfg.get("harmonics", 5))
-        alpha = float(pli_cfg.get("amplitude_decay", 1.0))
-        all_harmonics = bool(pli_cfg.get("all_harmonics", True))
-
-        t = np.arange(self.L, dtype=np.float64) / self.target_fs
-        noises = []
-
-        for _ in range(int(count)):
-            f0 = float(random.choice(fundamentals))
-            if drift_enabled:
-                f0 += random.uniform(-drift_range, drift_range)
-
-            y = np.zeros_like(t, dtype=np.float64)
-            harmonics = list(range(1, H + 1)) if all_harmonics else list(range(1, 2 * H, 2))[:H]
-
-            for k in harmonics:
-                A_k = 1.0 / (k ** alpha)
-                phi_k = 2 * np.pi * random.random()
-                y += A_k * np.sin(2 * np.pi * (k * f0) * t + phi_k)
-
-            if y.std() > 0:
-                y = y / y.std()
-
-            y = self._bp(y)
-            y = ensure_length(y, self.L)
-            noises.append(y)
-
-        return noises
-
+    def generate(self, count, config):
+        c=config.get("noise",{}).get("generation",{}).get("pli",{})
+        t=np.arange(self.L,dtype=np.float64)/self.target_fs; out=[]
+        for _ in range(count):
+            f0=float(random.choice(c.get("fundamental_hz",[50])))
+            if c.get("drift_enabled",True): f0+=random.uniform(-float(c.get("drift_range",0.3)),float(c.get("drift_range",0.3)))
+            H=int(c.get("harmonics",5)); alpha=float(c.get("amplitude_decay",1.0))
+            hs=list(range(1,H+1)) if c.get("all_harmonics",True) else list(range(1,2*H,2))[:H]
+            y=sum((1/k**alpha)*np.sin(2*np.pi*k*f0*t+2*np.pi*random.random()) for k in hs)
+            if y.std()>0: y/=y.std()
+            out.append(ensure_length(self._bp(y),self.L))
+        return out
 
 class WGNGenerator(NoiseGenerator):
-    def generate(self, count: int) -> List[np.ndarray]:
-        noises = []
-        for _ in range(int(count)):
-            x = np.random.normal(0, 1, self.L).astype(np.float64)
-            x = self._bp(x)
-            x = ensure_length(x, self.L)
-            noises.append(x)
-        return noises
-
+    def generate(self, count):
+        return [ensure_length(self._bp(np.random.normal(0,1,self.L)),self.L) for _ in range(count)]
 
 class ColorNoiseGenerator(NoiseGenerator):
-    def generate(self, count: int, config: Dict) -> List[Tuple[np.ndarray, str]]:
-        """
-        Returns list of (array, color_type) tuples where color_type is "pink" or "brown".
-        This allows the caller to save files with type-specific names for later analysis.
-        The noise framework still treats them all as "Color" during mixing.
-        """
-        color_cfg = config.get("noise", {}).get("generation", {}).get("color", {})
-        types = color_cfg.get("types", ["pink", "brown"])
-        sample_mode = str(color_cfg.get("sample_mode", "random")).lower()
-        pink_alpha = float(color_cfg.get("pink_alpha", 1.0))
-        brown_alpha = float(color_cfg.get("brown_alpha", 2.0))
-
-        results = []
-        N = self.L
-        freqs = np.fft.rfftfreq(N, 1.0 / self.target_fs)
-        freqs[0] = 1e-10
-
-        for i in range(int(count)):
-            if sample_mode == "alternating":
-                noise_type = types[i % len(types)]
-            else:
-                noise_type = random.choice(types)
-
-            alpha = pink_alpha if noise_type == "pink" else brown_alpha
-            white = np.random.randn(N // 2 + 1) + 1j * np.random.randn(N // 2 + 1)
-            colored = white / (freqs ** (alpha / 2.0))
-            x = np.fft.irfft(colored, n=N).real.astype(np.float64)
-
-            if x.std() > 0:
-                x = x / x.std()
-
-            x = self._bp(x)
-            x = ensure_length(x, self.L)
-            results.append((x, noise_type))
-
-        return results
-
+    def generate(self, count, config):
+        c=config.get("noise",{}).get("generation",{}).get("color",{})
+        types=c.get("types",["pink","brown"]); mode=str(c.get("sample_mode","random")).lower()
+        pa=float(c.get("pink_alpha",1.0)); ba=float(c.get("brown_alpha",2.0))
+        freqs=np.fft.rfftfreq(self.L,1.0/self.target_fs); freqs[0]=1e-10; out=[]
+        for i in range(count):
+            nt=types[i%len(types)] if mode=="alternating" else random.choice(types)
+            alpha=pa if nt=="pink" else ba
+            w=np.random.randn(self.L//2+1)+1j*np.random.randn(self.L//2+1)
+            x=np.fft.irfft(w/(freqs**(alpha/2)),n=self.L).real.astype(np.float64)
+            if x.std()>0: x/=x.std()
+            out.append((ensure_length(self._bp(x),self.L),nt))
+        return out
 
 class ECGGenerator(NoiseGenerator):
-    ECG_IDS = [16265, 16272, 16273, 16420, 16483, 16539, 16773, 16786, 16795,
-               17052, 17453, 18177, 18184, 19088, 19090, 19093, 19140, 19830]
-
-    def __init__(self, ecg_root: str, target_fs: int, time_length: int, config: Dict):
-        super().__init__(target_fs=target_fs, time_length=time_length, config=config)
-        self.ecg_root = ecg_root
-        self.fs_src = 128
-        self.seg_src_len = int(self.time_length * self.fs_src)
-
-        notch_enabled, notch_freq, notch_q = _get_notch_params(config)
-        self.notch_enabled = notch_enabled
-        self.notch_freq = notch_freq
-        self.notch_q = notch_q
-
-    def _read_segment_128(self, rid: int, start_128: int) -> Optional[np.ndarray]:
-        rec_path = os.path.join(self.ecg_root, str(rid))
+    ECG_IDS=[16265,16272,16273,16420,16483,16539,16773,16786,16795,
+             17052,17453,18177,18184,19088,19090,19093,19140,19830]
+    def __init__(self,ecg_root,target_fs,time_length,config):
+        super().__init__(target_fs,time_length,config)
+        self.ecg_root=ecg_root; self.fs_src=128; self.seg_src_len=int(time_length*128)
+        self.notch_en,self.notch_freq,self.notch_q=_get_notch_params(config)
+    def _read_128(self,rid,start):
         try:
-            rec = wfdb.rdrecord(rec_path, sampfrom=int(start_128), sampto=int(start_128 + self.seg_src_len))
-            p = getattr(rec, "p_signal", None)
-            if p is None:
-                return None
-            x = p[:, 0].astype(np.float64)
-            if x.size < self.seg_src_len:
-                x = ensure_length(x, self.seg_src_len)
-            return x
-        except Exception:
-            return None
-
-    def _record_len_128(self, rid: int) -> Optional[int]:
-        rec_path = os.path.join(self.ecg_root, str(rid))
-        try:
-            hdr = wfdb.rdheader(rec_path)
-            return int(hdr.sig_len)
-        except Exception:
-            return None
-
-    def _process_200s(self, x_128: np.ndarray) -> np.ndarray:
-        x = resample_signal_poly(x_128, self.fs_src, self.target_fs)
-        if self.notch_enabled:
-            x = apply_notch_filter(x, fs=self.target_fs, freq=self.notch_freq, q=self.notch_q)
-        x = apply_lowpass_filter(x, fs=self.target_fs, cutoff=200.0, order=4)
-        x = self._bp(x)
-        x = ensure_length(x, self.L)
-        return x
-
+            rec=wfdb.rdrecord(os.path.join(self.ecg_root,str(rid)),sampfrom=int(start),sampto=int(start+self.seg_src_len))
+            p=getattr(rec,"p_signal",None)
+            if p is None: return None
+            x=p[:,0].astype(np.float64)
+            return ensure_length(x,self.seg_src_len) if x.size<self.seg_src_len else x
+        except: return None
+    def _rlen(self,rid):
+        try: return int(wfdb.rdheader(os.path.join(self.ecg_root,str(rid))).sig_len)
+        except: return None
+    def _proc(self,x128):
+        x=resample_signal_poly(x128,self.fs_src,self.target_fs)
+        if self.notch_en: x=apply_notch_filter(x,self.target_fs,self.notch_freq,self.notch_q)
+        return ensure_length(self._bp(apply_lowpass_filter(x,self.target_fs,200.0)),self.L)
     @staticmethod
-    def _quick_stats(x: np.ndarray) -> Dict[str, float]:
-        x = np.asarray(x, dtype=np.float64).reshape(-1)
-        return {
-            "mean": float(np.mean(x)) if x.size else 0.0,
-            "std": float(np.std(x)) if x.size else 0.0,
-            "rms": float(np.sqrt(np.mean(x**2))) if x.size else 0.0,
-            "maxabs": float(np.max(np.abs(x))) if x.size else 0.0,
-        }
+    def _ok(x): s=x.std(); return s>1e-6 and np.abs(x).max()>1e-6 and np.isfinite(s)
+    def generate_cross_hour(self,ids,total,sph=1,hours=24,seed=None):
+        rng=random.Random(int(seed)&0xffffffff) if seed else random.Random()
+        plan=[h for h in range(hours) for _ in range(sph)]
+        if not plan: plan=[0]
+        while len(plan)<total: plan+=plan
+        plan=plan[:total]; noises,manifest=[],[]
+        for _ in range(total*10):
+            if len(noises)>=total: break
+            h=plan[len(noises)%len(plan)]; rid=rng.choice(ids); rl=self._rlen(rid)
+            if not rl: continue
+            hs=h*int(3600*self.fs_src); he=min(rl,(h+1)*int(3600*self.fs_src))
+            if he-hs<=self.seg_src_len+1: continue
+            s=rng.randint(hs,he-self.seg_src_len); x128=self._read_128(rid,s)
+            if x128 is None: continue
+            x=self._proc(x128); ok=self._ok(x)
+            manifest.append({"index":len(manifest),"record_id":rid,"hour":h,
+                              "start_128":s,"flagged":int(not ok),"status":"accepted" if ok else "rejected"})
+            if ok: noises.append(x)
+        return noises,manifest
+    def generate_random(self,ids,total,seed=None):
+        rng=random.Random(int(seed)&0xffffffff) if seed else random.Random()
+        noises,manifest=[],[]
+        for _ in range(total*10):
+            if len(noises)>=total: break
+            rid=rng.choice(ids); rl=self._rlen(rid)
+            if not rl or rl<=self.seg_src_len+1: continue
+            s=rng.randint(0,rl-self.seg_src_len); x128=self._read_128(rid,s)
+            if x128 is None: continue
+            x=self._proc(x128); ok=self._ok(x)
+            manifest.append({"index":len(manifest),"record_id":rid,"hour":-1,
+                              "start_128":s,"flagged":int(not ok),"status":"accepted" if ok else "rejected"})
+            if ok: noises.append(x)
+        return noises,manifest
+    
+def _safe_token(s: str) -> str:
+    s = str(s)
+    out = []
+    for c in s:
+        if c.isalnum() or c in ("-", "_"):
+            out.append(c)
+        else:
+            out.append("_")
+    return "".join(out).strip("_")
 
-    def generate_cross_hour(
-        self,
-        ids_to_use: List[int],
-        total_segments: int,
-        segments_per_hour: int = 1,
-        total_hours: int = 24,
-        seed: Optional[int] = None
-    ) -> Tuple[List[np.ndarray], List[Dict]]:
-        rng = random.Random(int(seed) & 0xffffffff) if seed is not None else random.Random()
-        manifest = []
-        noises = []
 
-        hours = list(range(int(total_hours)))
-        plan = []
-        for h in hours:
-            for _ in range(int(segments_per_hour)):
-                plan.append(h)
-        if not plan:
-            plan = [0]
+def _infer_moa_source_from_path(path: str) -> str:
+    p = str(path).lower()
+    if "machado" in p or "balbinot" in p:
+        return "Machado"
+    if "nstdb" in p or "noise_stress" in p or "mit-bih" in p or "mitbih" in p:
+        return "NSTDB"
+    return "Unknown"
 
-        while len(plan) < int(total_segments):
-            plan += plan
-        plan = plan[:int(total_segments)]
 
-        max_attempts = int(total_segments) * 10
+def _get_moa_specs(src: Dict, mode: str):
+    specs = []
 
-        for attempt in range(max_attempts):
-            if len(noises) >= int(total_segments):
-                break
+    machado_key = f"moa_machado_{mode}"
+    nstdb_key = f"moa_nstdb_{mode}"
 
-            h = plan[len(noises) % len(plan)]
-            rid = rng.choice(ids_to_use)
-            rec_len = self._record_len_128(rid)
-            if rec_len is None:
-                continue
+    if src.get(machado_key):
+        specs.append(("Machado", src[machado_key]))
 
-            hour_len = int(3600 * self.fs_src)
-            hour_start = int(h * hour_len)
-            hour_end = int(min(rec_len, hour_start + hour_len))
-            if hour_end - hour_start <= self.seg_src_len + 1:
-                continue
+    if src.get(nstdb_key):
+        specs.append(("NSTDB", src[nstdb_key]))
 
-            start_128 = rng.randint(hour_start, hour_end - self.seg_src_len)
-            x_128 = self._read_segment_128(rid, start_128)
-            if x_128 is None:
-                continue
+    # Backward-compatible fallback
+    if not specs:
+        old_key = f"moa_{mode}"
+        if src.get(old_key):
+            specs.append((None, src[old_key]))
 
-            x = self._process_200s(x_128)
-            st = self._quick_stats(x)
-            flagged = (st["std"] < 1e-6) or (st["maxabs"] < 1e-6) or (not np.isfinite(st["std"]))
-
-            manifest.append({
-                "index": len(manifest),
-                "record_id": rid,
-                "hour": int(h),
-                "start_128": int(start_128),
-                "flagged": 1 if flagged else 0,
-                "status": "rejected" if flagged else "accepted",
-                **st
-            })
-
-            if not flagged:
-                noises.append(x)
-
-        if len(noises) < int(total_segments):
-            print(f"[WARN] ECG: Only generated {len(noises)}/{total_segments} valid segments")
-
-        return noises, manifest
-
-    def generate_random(
-        self,
-        ids_to_use: List[int],
-        total_segments: int,
-        seed: Optional[int] = None
-    ) -> Tuple[List[np.ndarray], List[Dict]]:
-        rng = random.Random(int(seed) & 0xffffffff) if seed is not None else random.Random()
-        manifest = []
-        noises = []
-
-        max_attempts = int(total_segments) * 10
-
-        for attempt in range(max_attempts):
-            if len(noises) >= int(total_segments):
-                break
-
-            rid = rng.choice(ids_to_use)
-            rec_len = self._record_len_128(rid)
-            if rec_len is None or rec_len <= self.seg_src_len + 1:
-                continue
-
-            start_128 = rng.randint(0, rec_len - self.seg_src_len)
-            x_128 = self._read_segment_128(rid, start_128)
-            if x_128 is None:
-                continue
-
-            x = self._process_200s(x_128)
-            st = self._quick_stats(x)
-            flagged = (st["std"] < 1e-6) or (st["maxabs"] < 1e-6) or (not np.isfinite(st["std"]))
-
-            manifest.append({
-                "index": len(manifest),
-                "record_id": rid,
-                "hour": -1,
-                "start_128": int(start_128),
-                "flagged": 1 if flagged else 0,
-                "status": "rejected" if flagged else "accepted",
-                **st
-            })
-
-            if not flagged:
-                noises.append(x)
-
-        if len(noises) < int(total_segments):
-            print(f"[WARN] ECG: Only generated {len(noises)}/{total_segments} valid segments")
-
-        return noises, manifest
-
+    return specs
 
 class MOAGenerator(NoiseGenerator):
-    def __init__(self, moa_path: str, target_fs: int, time_length: int, config: Dict):
-        super().__init__(target_fs=target_fs, time_length=time_length, config=config)
+    def __init__(self, moa_path, target_fs, time_length, config, source_hint=None):
+        super().__init__(target_fs, time_length, config)
         self.moa_path = moa_path
+        self.source_hint = source_hint
+        self.notch_en, self.notch_freq, self.notch_q = _get_notch_params(config)
 
-        notch_enabled, notch_freq, notch_q = _get_notch_params(config)
-        self.notch_enabled = notch_enabled
-        self.notch_freq = notch_freq
-        self.notch_q = notch_q
+    def generate(self):
+        out = []
 
-    def generate(self) -> List[np.ndarray]:
-        mat_files = sorted(glob(os.path.join(self.moa_path, "*.mat")))
-        if not mat_files:
-            print(f"[WARN] No MOA mats in {self.moa_path}")
-            return []
+        mat_files = sorted(glob(os.path.join(self.moa_path, "**", "*.mat"), recursive=True))
 
-        noises = []
         for mp in mat_files:
             try:
                 m = scipy.io.loadmat(mp)
-                if "a" in m:
-                    x = np.asarray(m["a"]).squeeze()
-                else:
-                    cand = None
-                    for k, v in m.items():
-                        if k.startswith("__"):
-                            continue
-                        vv = np.asarray(v)
-                        if vv.ndim >= 1 and np.issubdtype(vv.dtype, np.number):
-                            cand = vv.squeeze()
-                            break
-                    if cand is None:
-                        continue
-                    x = cand
 
-                x = x.astype(np.float64).reshape(-1)
-                if x.size < 256:
+                x = np.asarray(m["a"]).squeeze() if "a" in m else next(
+                    (
+                        np.asarray(v).squeeze()
+                        for k, v in m.items()
+                        if not k.startswith("__")
+                        and np.issubdtype(np.asarray(v).dtype, np.number)
+                    ),
+                    None,
+                )
+
+                if x is None or x.size < 256:
                     continue
 
-                if self.notch_enabled:
-                    x = apply_notch_filter(x, fs=2000, freq=self.notch_freq, q=self.notch_q)
+                x = x.astype(np.float64).reshape(-1)
+
+                if self.notch_en:
+                    x = apply_notch_filter(x, 2000, self.notch_freq, self.notch_q)
 
                 x = np.convolve(x, np.ones(51) / 51, mode="valid")[::2]
 
@@ -504,514 +312,421 @@ class MOAGenerator(NoiseGenerator):
 
                 x = self._bp(x)
 
-                if x.size < self.L:
-                    seg = ensure_length(x, self.L)
-                else:
-                    s = random.randint(0, x.size - self.L)
-                    seg = x[s:s + self.L]
-                noises.append(seg.copy())
+                seg = ensure_length(x, self.L) if x.size < self.L else x[random.randint(0, x.size - self.L):][:self.L]
+
+                source = self.source_hint or _infer_moa_source_from_path(mp)
+                stem = _safe_token(os.path.splitext(os.path.basename(mp))[0])
+                rel_path = os.path.relpath(mp, self.moa_path)
+
+                out.append({
+                    "signal": seg.copy(),
+                    "source": source,
+                    "stem": stem,
+                    "source_file": rel_path,
+                })
 
             except Exception as e:
-                print(f"[WARN] MOA process fail {mp}: {e}")
+                print(f"[WARN] MOA {mp}: {e}")
 
-        return noises
+        return out
 
 
 # ============================================================================
 # Build noise library
 # ============================================================================
-def _save_manifest_csv(path: str, rows: List[Dict]) -> None:
-    if not rows:
-        return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    keys = list(rows[0].keys())
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        wr = csv.DictWriter(f, fieldnames=keys)
-        wr.writeheader()
-        for r in rows:
-            wr.writerow(r)
+def _save_csv(path,rows):
+    if not rows: return
+    os.makedirs(os.path.dirname(path),exist_ok=True)
+    with open(path,"w",newline="",encoding="utf-8") as f:
+        wr=csv.DictWriter(f,fieldnames=list(rows[0].keys())); wr.writeheader(); wr.writerows(rows)
 
-
-def build_noise_library(config: Dict, mode: str) -> None:
-    is_train = (mode == "train")
-
-    out_base = get_output_base(config)
-    noise_dir = os.path.join(out_base, config["paths"]["output"][f"noise_{mode}"])
-    os.makedirs(noise_dir, exist_ok=True)
-
-    seed = int(config.get("project", {}).get("random_seed", 12345)) + (0 if is_train else 999)
+def build_noise_library(config,mode):
+    is_train=(mode=="train"); out_base=get_output_base(config)
+    noise_dir=os.path.join(out_base,config["paths"]["output"][f"noise_{mode}"])
+    os.makedirs(noise_dir,exist_ok=True)
+    seed=int(config.get("project",{}).get("random_seed",12345))+(0 if is_train else 999)
     seed_everything(seed)
+    src=config["paths"]["noise_sources"]
+    fs=int(config["noise"]["generation"].get("target_fs",config["preprocessing"]["segmentation"]["target_fs"]))
+    tlen=int(config["noise"]["generation"]["time_length"])
+    counts=config["noise"]["generation"][f"{mode}_count"]
+    bp_en,bp_lo,bp_hi,_=_get_bp_params(config)
+    nt_en,nt_fr,nt_q=_get_notch_params(config)
 
-    src = config["paths"]["noise_sources"]
-    target_fs = int(config["noise"]["generation"].get("target_fs", config["preprocessing"]["segmentation"]["target_fs"]))
-    time_length = int(config["noise"]["generation"]["time_length"])
-    counts = config["noise"]["generation"][f"{mode}_count"]
+    print(f"\n{'='*80}\nBuild Noise Library ({mode}) — v6.8.0\n{'='*80}")
+    print(f"WGN floor: {WGN_COMPONENT_SNR_MIN_DB} dB component SNR (capping applied in mix)")
 
-    bp_enabled, bp_low, bp_high, _ = _get_bp_params(config)
-    notch_enabled, notch_freq, notch_q = _get_notch_params(config)
+    def savedir(n):
+        d=os.path.join(noise_dir,n); os.makedirs(d,exist_ok=True); return d
 
-    print(f"\n{'='*80}")
-    print(f"Building Noise Library ({mode}) - v6.3.0")
-    print(f"{'='*80}")
-    print(f"Output: {noise_dir}")
-    print(f"seed={seed}")
-    print(f"target_fs={target_fs}, time_length={time_length}s")
-    print(f"Notch: {'ON' if notch_enabled else 'OFF'} freq={notch_freq}Hz q={notch_q}")
-    print(f"Final bandpass: {('%.1f-%.1f Hz' % (bp_low, bp_high)) if bp_enabled else 'DISABLED'}")
-    print(f"Noise Types: {config['noise']['types']}")
-    print(f"NOTE: Color noise saved as Color_pink_*.npy / Color_brown_*.npy")
-
-    # PLI
     print("\n[1/5] PLI")
-    pli = PLIGenerator(target_fs=target_fs, time_length=time_length, config=config)
-    pli_list = pli.generate(int(counts.get("PLI", 0)), config=config)
-    d = os.path.join(noise_dir, "PLI")
-    os.makedirs(d, exist_ok=True)
-    for i, x in enumerate(pli_list):
-        np.save(os.path.join(d, f"PLI_{i}.npy"), x.astype(np.float32))
-    print(f"  Saved {len(pli_list)} files")
+    g=PLIGenerator(fs,tlen,config); lst=g.generate(int(counts.get("PLI",0)),config)
+    d=savedir("PLI")
+    for i,x in enumerate(lst): np.save(os.path.join(d,f"PLI_{i}.npy"),x.astype(np.float32))
+    print(f"  Saved {len(lst)}")
 
-    # WGN
     print("\n[2/5] WGN")
-    wgn = WGNGenerator(target_fs=target_fs, time_length=time_length, config=config)
-    wgn_list = wgn.generate(int(counts.get("WGN", 0)))
-    d = os.path.join(noise_dir, "WGN")
-    os.makedirs(d, exist_ok=True)
-    for i, x in enumerate(wgn_list):
-        np.save(os.path.join(d, f"WGN_{i}.npy"), x.astype(np.float32))
-    print(f"  Saved {len(wgn_list)} files")
+    g=WGNGenerator(fs,tlen,config); lst=g.generate(int(counts.get("WGN",0)))
+    d=savedir("WGN")
+    for i,x in enumerate(lst): np.save(os.path.join(d,f"WGN_{i}.npy"),x.astype(np.float32))
+    print(f"  Saved {len(lst)}")
 
-    # Color (pink + brown - saved with type-specific filenames)
-    print("\n[3/5] Color (pink/brown - type-specific filenames)")
-    color = ColorNoiseGenerator(target_fs=target_fs, time_length=time_length, config=config)
-    color_results = color.generate(int(counts.get("Color", 0)), config=config)
-    d = os.path.join(noise_dir, "Color")
-    os.makedirs(d, exist_ok=True)
-    # Track per-type counts for informative output
-    pink_count = 0
-    brown_count = 0
-    for i, (x, color_type) in enumerate(color_results):
-        # Save with type in filename: Color_pink_0.npy, Color_brown_1.npy, etc.
-        np.save(os.path.join(d, f"Color_{color_type}_{i}.npy"), x.astype(np.float32))
-        if color_type == "pink":
-            pink_count += 1
-        else:
-            brown_count += 1
-    print(f"  Saved {len(color_results)} files (pink={pink_count}, brown={brown_count})")
-    print(f"  OnlineNoiseMixer will load all as key='Color' (framework unchanged)")
+    print("\n[3/5] Color (pink/brown)")
+    g=ColorNoiseGenerator(fs,tlen,config); results=g.generate(int(counts.get("Color",0)),config)
+    d=savedir("Color"); pc=bc=0
+    for i,(x,ct) in enumerate(results):
+        np.save(os.path.join(d,f"Color_{ct}_{i}.npy"),x.astype(np.float32))
+        if ct=="pink": pc+=1
+        else: bc+=1
+    print(f"  Saved {len(results)} (pink={pc}, brown={bc})")
 
-    # ECG
-    print("\n[4/5] ECG (cross-hour sampling, v6.3.0)")
-    d = os.path.join(noise_dir, "ECG")
-    os.makedirs(d, exist_ok=True)
-
+    print("\n[4/5] ECG")
+    d=savedir("ECG")
     if os.path.exists(src["ecg"]):
-        ecg = ECGGenerator(ecg_root=src["ecg"], target_fs=target_fs, time_length=time_length, config=config)
-
-        train_ids, test_ids = get_or_create_ecg_test_ids(config, ecg.ECG_IDS)
-        ids_to_use = train_ids if is_train else test_ids
-
-        ecg_cfg = config.get("noise", {}).get("generation", {}).get("ecg", {})
-        hourly = bool(ecg_cfg.get("hourly_sampling", True)) and is_train
-        segments_per_hour = int(ecg_cfg.get("segments_per_hour", 1))
-        total_hours = int(ecg_cfg.get("total_hours", 24))
-
-        if is_train:
-            total_segments = int(ecg_cfg.get("train_segments", 24))
-        else:
-            total_segments = int(ecg_cfg.get("test_segments", 4))
-
-        print(f"  Mode: {'train' if is_train else 'test'}")
-        print(f"  Record IDs ({len(ids_to_use)}): {ids_to_use}")
-        print(f"  Total segments to generate: {total_segments}")
-
+        ecg=ECGGenerator(src["ecg"],fs,tlen,config)
+        train_ids,test_ids=get_or_create_ecg_test_ids(config,ecg.ECG_IDS)
+        ids=train_ids if is_train else test_ids
+        ec=config.get("noise",{}).get("generation",{}).get("ecg",{})
+        hourly=bool(ec.get("hourly_sampling",True)) and is_train
+        segs=int(ec.get("train_segments" if is_train else "test_segments",24 if is_train else 4))
         if hourly:
-            ecg_list, manifest = ecg.generate_cross_hour(
-                ids_to_use=ids_to_use,
-                total_segments=total_segments,
-                segments_per_hour=segments_per_hour,
-                total_hours=total_hours,
-                seed=seed
-            )
+            lst,man=ecg.generate_cross_hour(ids,segs,int(ec.get("segments_per_hour",1)),int(ec.get("total_hours",24)),seed)
         else:
-            ecg_list, manifest = ecg.generate_random(
-                ids_to_use=ids_to_use,
-                total_segments=total_segments,
-                seed=seed
-            )
-
-        for i, x in enumerate(ecg_list):
-            np.save(os.path.join(d, f"ECG_{i}.npy"), x.astype(np.float32))
-
-        man_path = os.path.join(noise_dir, f"ECG_manifest_{mode}.csv")
-        _save_manifest_csv(man_path, manifest)
-
-        print(f"  hourly_sampling={hourly}")
-        print(f"  Generated: {len(ecg_list)} segments")
-        print(f"  Manifest: {man_path}")
+            lst,man=ecg.generate_random(ids,segs,seed)
+        for i,x in enumerate(lst): np.save(os.path.join(d,f"ECG_{i}.npy"),x.astype(np.float32))
+        _save_csv(os.path.join(noise_dir,f"ECG_manifest_{mode}.csv"),man)
+        print(f"  Saved {len(lst)} (hourly={hourly})")
     else:
-        print(f"  [SKIP] ECG not found: {src['ecg']}")
+        print(f"  [SKIP] {src['ecg']}")
 
-    # MOA
     print("\n[5/5] MOA")
-    d = os.path.join(noise_dir, "MOA")
-    os.makedirs(d, exist_ok=True)
-    moa_path = src.get(f"moa_{mode}", "")
-    if moa_path and os.path.exists(moa_path):
-        moa = MOAGenerator(moa_path=moa_path, target_fs=target_fs, time_length=time_length, config=config)
-        moa_list = moa.generate()
-        for i, x in enumerate(moa_list):
-            np.save(os.path.join(d, f"MOA_{i}.npy"), x.astype(np.float32))
-        print(f"  Saved {len(moa_list)} files")
+    d = savedir("MOA")
+    moa_specs = _get_moa_specs(src, mode)
+
+    all_moa_items = []
+    moa_manifest = []
+
+    if moa_specs:
+        for source_hint, mp in moa_specs:
+            if not mp or not os.path.exists(mp):
+                print(f"  [SKIP] {source_hint or 'MOA'}: {mp}")
+                continue
+
+            items = MOAGenerator(
+                mp,
+                fs,
+                tlen,
+                config,
+                source_hint=source_hint,
+            ).generate()
+
+            all_moa_items.extend(items)
+
+        for i, item in enumerate(all_moa_items):
+            source = item.get("source", "Unknown")
+            stem = item.get("stem", f"{i}")
+            signal = item["signal"]
+
+            fname = f"MOA_{_safe_token(source)}_{i:03d}_{_safe_token(stem)}.npy"
+            out_path = os.path.join(d, fname)
+
+            np.save(out_path, signal.astype(np.float32))
+
+            moa_manifest.append({
+                "index": i,
+                "file": fname,
+                "source": source,
+                "source_file": item.get("source_file", ""),
+            })
+
+        _save_csv(os.path.join(noise_dir, f"MOA_manifest_{mode}.csv"), moa_manifest)
+        print(f"  Saved {len(all_moa_items)}")
     else:
-        print(f"  [SKIP] MOA not found: {moa_path}")
+        print("  [SKIP] no MOA source configured")
 
-    print(f"\n{'='*80}\nNoise Library Complete ({mode})\n{'='*80}")
-    for ntype in ["PLI", "WGN", "Color", "ECG", "MOA"]:
-        nd = os.path.join(noise_dir, ntype)
+    print(f"\n{'='*80}\nSummary ({mode})\n{'='*80}")
+    for nt in ["PLI","WGN","Color","ECG","MOA"]:
+        nd=os.path.join(noise_dir,nt)
         if os.path.isdir(nd):
-            nfiles = len(glob(os.path.join(nd, "*.npy")))
-            print(f"  {ntype}: {nfiles} files")
-            # For Color, show pink/brown breakdown
-            if ntype == "Color":
-                n_pink = len(glob(os.path.join(nd, "*_pink_*.npy")))
-                n_brown = len(glob(os.path.join(nd, "*_brown_*.npy")))
-                n_legacy = nfiles - n_pink - n_brown
-                if n_pink or n_brown:
-                    print(f"    → pink={n_pink}, brown={n_brown}", end="")
-                    if n_legacy:
-                        print(f", legacy(no-type)={n_legacy}", end="")
-                    print()
+            nf=len(glob(os.path.join(nd,"*.npy")))
+            if nt=="Color":
+                np_=len(glob(os.path.join(nd,"*_pink_*.npy"))); nb=len(glob(os.path.join(nd,"*_brown_*.npy")))
+                print(f"  {nt}: {nf} (pink={np_}, brown={nb})")
+            else: print(f"  {nt}: {nf}")
 
 
 # ============================================================================
-# Online mixer
+# WGN power allocation (shared logic with generate_test_data.py)
 # ============================================================================
-def _infer_color_subtype(path: str) -> str:
+def _compute_noise_targets(clean_pow: float, total_snr: float,
+                            selected: List[str]) -> Dict[str, float]:
     """
-    Infer whether a Color noise file is pink or brown from its filename.
-    Returns "Pink", "Brown", or "Color" (for legacy files without type in name).
+    Compute target noise power for each selected noise type.
+
+    WGN rule:
+      - Equal split if WGN's equal-share component SNR is >= floor.
+      - Cap WGN only if equal-share component SNR would be below floor.
+      - k=1 WGN below floor is handled upstream by excluding WGN.
     """
-    basename = os.path.basename(path).lower()
-    if "_pink_" in basename:
-        return "Pink"
-    if "_brown_" in basename:
-        return "Brown"
-    return "Color"
+    k = len(selected)
+    total_noise = clean_pow / (10.0 ** (total_snr / 10.0))
+
+    if k <= 0:
+        return {}
+
+    if "WGN" not in selected or k <= 1:
+        return {nt: total_noise / k for nt in selected}
+
+    # WGN present, k >= 2.
+    # This is the maximum allowed WGN power corresponding to the -5 dB floor.
+    wgn_equal_pow = total_noise / k
+    wgn_floor_pow = clean_pow / (10.0 ** (WGN_COMPONENT_SNR_MIN_DB / 10.0))
+
+    # If equal split already keeps WGN at or above the floor, do not cap.
+    # In power terms: component SNR >= floor  <=>  WGN power <= floor power.
+    if wgn_equal_pow <= wgn_floor_pow:
+        return {nt: total_noise / k for nt in selected}
+
+    # Otherwise, WGN would be too strong, so cap WGN and redistribute the rest.
+    remaining = total_noise - wgn_floor_pow
+
+    # Numerical guard. This should not be negative after the condition above.
+    if remaining < 0:
+        remaining = 0.0
+
+    per_other = remaining / (k - 1)
+
+    return {
+        nt: (wgn_floor_pow if nt == "WGN" else per_other)
+        for nt in selected
+    }
 
 
+# ============================================================================
+# Online Noise Mixer
+# ============================================================================
 class OnlineNoiseMixer:
-    # The 5-type framework is unchanged. Color is still one type for mixing.
+    """
+    Online noise mixer for training (v6.8.0).
+
+    Training SNR is sampled from the full range [snr_train_min, snr_train_max].
+    WGN power capping is applied in mix() — not at sampling time.
+    This ensures WGN's component SNR is always >= WGN_COMPONENT_SNR_MIN_DB,
+    consistent with the test data policy in generate_test_data.py v6.8.0.
+    """
+
     NOISE_TYPES = ["PLI", "ECG", "MOA", "WGN", "Color"]
 
-    def __init__(
-        self,
-        noise_root: str,
-        config: Optional[Dict] = None,
-        noise_types: Optional[List[str]] = None,
-        cache_noise: bool = True,
-        seed: Optional[int] = None
-    ):
-        self.noise_root = noise_root
-        self.cfg = config or {}
-        self.noise_types = noise_types or self.cfg.get("noise", {}).get("types", self.NOISE_TYPES)
+    def __init__(self, noise_root, config=None, noise_types=None,
+                 cache_noise=True, seed=None):
+        self.noise_root  = noise_root
+        self.cfg         = config or {}
+        self.noise_types = noise_types or self.cfg.get("noise",{}).get("types",self.NOISE_TYPES)
         self.cache_noise = cache_noise
+        self.noise_paths: Dict[str,List[str]] = {}
+        self.noise_cache: Dict[str,np.ndarray] = {}
 
-        self.noise_paths: Dict[str, List[str]] = {}
-        self.noise_cache: Dict[str, np.ndarray] = {}
+        ncfg=self.cfg.get("noise",{})
+        self.k_min         = int(ncfg.get("k_types",{}).get("min",1))
+        self.k_max         = int(ncfg.get("k_types",{}).get("max",5))
+        self.snr_train_min = float(ncfg.get("snr_train",{}).get("min",-15.0))
+        self.snr_train_max = float(ncfg.get("snr_train",{}).get("max",15.0))
+        self.snr_dist      = str(ncfg.get("snr_train",{}).get("distribution","uniform")).lower()
+        # snr_test_grid: unified grid (no separate wgn grid needed)
+        self.snr_test_grid = list(ncfg.get("snr_test",{}).get("grid",[-15,-10,-5,0,5,10,15]))
 
-        self.stats = {
-            "total_mixed": 0,
-            "noise_type_counts": Counter(),
-            "k_distribution": Counter(),
-            "snr_values": defaultdict(list),
-        }
-
-        ncfg = self.cfg.get("noise", {})
-        self.k_min = int(ncfg.get("k_types", {}).get("min", 1))
-        self.k_max = int(ncfg.get("k_types", {}).get("max", 5))
-        self.snr_train_min = float(ncfg.get("snr_train", {}).get("min", -15.0))
-        self.snr_train_max = float(ncfg.get("snr_train", {}).get("max", 15.0))
-        self.snr_train_wgn_min = float(ncfg.get("snr_train", {}).get("wgn_min", -5.0))
-        self.snr_dist = str(ncfg.get("snr_train", {}).get("distribution", "uniform")).lower()
-
-        self.snr_test_grid = list(ncfg.get("snr_test", {}).get("grid", [-15, -10, -5, 0, 5, 10, 15]))
-        self.snr_test_grid_wgn = list(ncfg.get("snr_test", {}).get("grid_wgn", [-5, 0, 5, 10, 15]))
-
-        self.base_seed = int(seed) & 0xffffffff if seed is not None else None
-
+        self.stats = {"total_mixed":0,"noise_type_counts":Counter(),
+                      "k_distribution":Counter(),"snr_values":defaultdict(list)}
+        self.base_seed = int(seed)&0xffffffff if seed is not None else None
         if seed is not None:
-            self.rng = random.Random(seed)
-            self.rng_np = np.random.default_rng(seed)
+            self.rng=random.Random(seed); self.rng_np=np.random.default_rng(seed)
         else:
-            self.rng = random.Random()
-            self.rng_np = np.random.default_rng()
+            self.rng=random.Random(); self.rng_np=np.random.default_rng()
 
-        self._load_noise_paths()
-        if cache_noise:
-            self._cache_all()
+        self._load_paths()
+        if cache_noise: self._cache_all()
 
-    def _load_noise_paths(self):
-        """
-        Load noise paths. Color/* files (including Color_pink_*.npy and
-        Color_brown_*.npy) are ALL loaded under key "Color" so the 5-type
-        mixing framework is unchanged.
-        """
+    def _load_paths(self):
         for nt in self.noise_types:
-            d = os.path.join(self.noise_root, nt)
-            if not os.path.isdir(d):
-                continue
-            ps = sorted(glob(os.path.join(d, "*.npy")))
-            if ps:
-                self.noise_paths[nt] = ps
-        if not self.noise_paths:
-            raise ValueError(f"No noise found under: {self.noise_root}")
+            d=os.path.join(self.noise_root,nt)
+            ps=sorted(glob(os.path.join(d,"*.npy"))) if os.path.isdir(d) else []
+            if ps: self.noise_paths[nt]=ps
+        if not self.noise_paths: raise ValueError(f"No noise under {self.noise_root}")
 
     def _cache_all(self):
-        print("[OnlineNoiseMixer] Caching noise files...")
-        for _, ps in self.noise_paths.items():
+        print("[OnlineNoiseMixer] Caching …")
+        for ps in self.noise_paths.values():
             for p in ps:
-                if p not in self.noise_cache:
-                    self.noise_cache[p] = np.load(p).astype(np.float64)
-        print(f"[OnlineNoiseMixer] Cached {len(self.noise_cache)} files")
-        print(f"  Available types: {list(self.noise_paths.keys())}")
-        for nt, ps in self.noise_paths.items():
-            if nt == "Color":
-                n_pink = sum(1 for p in ps if "_pink_" in os.path.basename(p))
-                n_brown = sum(1 for p in ps if "_brown_" in os.path.basename(p))
-                n_legacy = len(ps) - n_pink - n_brown
-                extra = f" (pink={n_pink}, brown={n_brown}"
-                if n_legacy:
-                    extra += f", legacy={n_legacy}"
-                extra += ")"
-                print(f"    {nt}: {len(ps)} files{extra}")
-            else:
-                print(f"    {nt}: {len(ps)} files")
+                if p not in self.noise_cache: self.noise_cache[p]=np.load(p).astype(np.float64)
+        print(f"[OnlineNoiseMixer] {len(self.noise_cache)} files")
+        for nt,ps in self.noise_paths.items():
+            if nt=="Color":
+                np_=sum(1 for p in ps if "_pink_" in os.path.basename(p))
+                nb =sum(1 for p in ps if "_brown_" in os.path.basename(p))
+                print(f"  {nt}: {len(ps)} (pink={np_}, brown={nb})")
+            else: print(f"  {nt}: {len(ps)}")
+        print(f"  WGN floor: {WGN_COMPONENT_SNR_MIN_DB} dB component (capped, not excluded)")
 
-    def _get(self, path: str) -> np.ndarray:
-        if path in self.noise_cache:
-            return self.noise_cache[path]
-        return np.load(path).astype(np.float64)
+    def _get(self, path):
+        return self.noise_cache.get(path) or np.load(path).astype(np.float64)
 
     @staticmethod
-    def _sample_seg(x: np.ndarray, L: int, rng: random.Random) -> np.ndarray:
-        x = np.asarray(x, dtype=np.float64).reshape(-1)
-        if x.size < L:
-            return ensure_length(x, L).copy()
-        s = rng.randint(0, x.size - L)
-        return x[s:s + L].copy()
+    def _seg(x, L, rng):
+        x=np.asarray(x,dtype=np.float64).reshape(-1)
+        if x.size<L: return ensure_length(x,L).copy()
+        s=rng.randint(0,x.size-L); return x[s:s+L].copy()
 
-    def _sample_snr_train(self, has_wgn: bool, rng_np: np.random.Generator) -> float:
-        lo = self.snr_train_wgn_min if has_wgn else self.snr_train_min
-        hi = self.snr_train_max
-        if self.snr_dist == "uniform":
-            return float(rng_np.uniform(lo, hi))
-        return float(rng_np.uniform(lo, hi))
-
-    def mix(
-        self,
-        clean: np.ndarray,
-        k: Optional[int] = None,
-        snr: Optional[float] = None,
-        noise_types: Optional[List[str]] = None,
-        mode: str = "train",
-        seed: Optional[int] = None
-    ) -> Tuple[np.ndarray, Dict]:
+    def mix(self, clean, k=None, snr=None, noise_types=None,
+            mode="train", seed=None):
         if seed is not None:
-            seed_use = int(seed) & 0xffffffff
-            rng = random.Random(seed_use)
-            rng_np = np.random.default_rng(seed_use)
+            su=int(seed)&0xffffffff; rng=random.Random(su); rnp=np.random.default_rng(su)
         else:
-            rng = self.rng
-            rng_np = self.rng_np
-            seed_use = self.base_seed
+            rng,rnp,su=self.rng,self.rng_np,self.base_seed
 
-        clean = np.asarray(clean, dtype=np.float64).reshape(-1)
-        L = clean.size
-        if L == 0:
-            return clean, {"snr": None, "k": 0, "noise_types": [], "scalars": [],
-                           "noise_paths": [], "mode": mode, "has_wgn": False}
+        clean=np.asarray(clean,dtype=np.float64).reshape(-1); L=clean.size
+        if L==0:
+            return clean, {"snr":None,"k":0,"noise_types":[],"scalars":[],"noise_paths":[],"has_wgn":False,"wgn_capped":False}
 
-        available = list(self.noise_paths.keys())
+        available=list(self.noise_paths.keys())
         if not available:
-            return clean, {"snr": None, "k": 0, "noise_types": [], "scalars": [],
-                           "noise_paths": [], "mode": mode, "has_wgn": False}
+            return clean, {"snr":None,"k":0,"noise_types":[],"scalars":[],"noise_paths":[],"has_wgn":False,"wgn_capped":False}
 
-        max_k = min(int(self.k_max), len(available))
-        min_k = max(1, min(int(self.k_min), max_k))
+        max_k=min(self.k_max,len(available)); min_k=max(1,min(self.k_min,max_k))
+        k = rng.randint(min_k,max_k) if k is None else max(min_k,min(int(k),max_k))
 
-        if k is None:
-            k = rng.randint(min_k, max_k)
+        # Sample SNR from full range (no WGN-specific floor — capping handles it)
+        if mode=="train":
+            snr_val=(float(rnp.uniform(self.snr_train_min,self.snr_train_max))
+                     if snr is None else float(snr))
+            snr_val=float(np.clip(snr_val,self.snr_train_min,self.snr_train_max))
         else:
-            k = max(min_k, min(int(k), max_k))
+            snr_val=(float(rng.choice(self.snr_test_grid))
+                     if snr is None else float(snr))
+
+        # For k=1, remove WGN from pool if it would be below floor
+        avail_k = list(available)
+        if k == 1 and "WGN" in avail_k and snr_val < WGN_COMPONENT_SNR_MIN_DB:
+            avail_k = [t for t in avail_k if t != "WGN"]
+
+        k = min(k, len(avail_k))
 
         if noise_types is not None:
-            selected = [nt for nt in noise_types if nt in available]
-            if len(selected) < k:
-                rest = [nt for nt in available if nt not in selected]
-                if len(rest) >= (k - len(selected)):
-                    selected += rng.sample(rest, k - len(selected))
-                else:
-                    selected += rest
-            selected = selected[:k]
+            selected=[t for t in noise_types if t in avail_k]
+            rest=[t for t in avail_k if t not in selected]
+            if len(selected)<k: selected+=rng.sample(rest,min(k-len(selected),len(rest)))
+            selected=selected[:k]
         else:
-            selected = rng.sample(available, k)
+            selected=rng.sample(avail_k, k)
 
-        has_wgn = ("WGN" in selected)
-
-        if mode == "train":
-            snr_val = self._sample_snr_train(has_wgn, rng_np) if snr is None else float(snr)
-            lo = self.snr_train_wgn_min if has_wgn else self.snr_train_min
-            hi = self.snr_train_max
-            snr_val = float(np.clip(snr_val, lo, hi))
-        else:
-            grid = self.snr_test_grid_wgn if has_wgn else self.snr_test_grid
-            if snr is None:
-                snr_val = float(rng.choice(grid))
-            else:
-                snr_val = float(snr)
-                lo = self.snr_train_wgn_min if has_wgn else self.snr_train_min
-                hi = self.snr_train_max
-                snr_val = float(np.clip(snr_val, lo, hi))
-
+        has_wgn = "WGN" in selected
         clean_pow = float(np.dot(clean, clean))
-        target_noise_pow = clean_pow / (10.0 ** (snr_val / 10.0)) if clean_pow > 0 else 0.0
-        target_each = target_noise_pow / k if k > 0 else 0.0
 
-        combined = np.zeros(L, dtype=np.float64)
-        scalars, used_paths = [], []
+        # Compute per-type power targets with WGN capping
+        targets = _compute_noise_targets(clean_pow, snr_val, selected)
+        wgn_capped = (
+            has_wgn and k >= 2 and
+            (snr_val + 10.0 * np.log10(k)) < WGN_COMPONENT_SNR_MIN_DB
+        )
 
+        if clean_pow < 1e-12:
+            return clean.copy(), {
+                "snr":snr_val,"k":k,"noise_types":selected,
+                "scalars":[0.0]*k,"noise_paths":[],"has_wgn":has_wgn,"wgn_capped":wgn_capped
+            }
+
+        combined=np.zeros(L,dtype=np.float64); scalars=[]; used_paths=[]
         for nt in selected:
-            p = rng.choice(self.noise_paths[nt])
-            used_paths.append(p)
-            nfull = self._get(p)
-            nseg = self._sample_seg(nfull, L, rng)
+            p=rng.choice(self.noise_paths[nt]); used_paths.append(p)
+            nseg=self._seg(self._get(p),L,rng)
+            npow=float(np.dot(nseg,nseg))
+            s=float(np.sqrt(targets[nt]/npow)) if npow>1e-12 else 0.0
+            scalars.append(s); combined+=s*nseg
 
-            n_pow = float(np.dot(nseg, nseg))
-            s = float(np.sqrt(target_each / n_pow)) if n_pow > 1e-12 else 0.0
-            scalars.append(s)
-            combined += s * nseg
-
-        noisy = clean + combined
-
-        self.stats["total_mixed"] += 1
-        for nt in selected:
-            self.stats["noise_type_counts"][nt] += 1
-        self.stats["k_distribution"][k] += 1
+        self.stats["total_mixed"]+=1
+        self.stats["k_distribution"][k]+=1
         self.stats["snr_values"][mode].append(snr_val)
+        for nt in selected: self.stats["noise_type_counts"][nt]+=1
 
-        info = {
-            "snr": snr_val,
-            "k": k,
-            "noise_types": selected,       # e.g. ["Color", "WGN"]
-            "scalars": scalars,
-            "noise_paths": used_paths,     # e.g. [".../Color/Color_pink_3.npy", ...]
-            "mode": mode,
-            "has_wgn": has_wgn,
-            "seed": seed_use
+        return clean+combined, {
+            "snr":snr_val,"k":k,"noise_types":selected,"scalars":scalars,
+            "noise_paths":used_paths,"mode":mode,"has_wgn":has_wgn,
+            "wgn_capped":wgn_capped,"seed":su,
         }
-        return noisy, info
 
-    def get_statistics(self) -> Dict:
-        stats_report = {
-            "total_mixed": self.stats["total_mixed"],
-            "noise_type_distribution": dict(self.stats["noise_type_counts"]),
-            "k_distribution": dict(self.stats["k_distribution"]),
-            "snr_statistics": {}
-        }
-        for mode, snr_list in self.stats["snr_values"].items():
-            if snr_list:
-                stats_report["snr_statistics"][mode] = {
-                    "count": len(snr_list),
-                    "min": float(np.min(snr_list)),
-                    "max": float(np.max(snr_list)),
-                    "mean": float(np.mean(snr_list)),
-                    "std": float(np.std(snr_list)),
-                }
-        return stats_report
+    def get_statistics(self):
+        out={"total_mixed":self.stats["total_mixed"],
+             "noise_type_distribution":dict(self.stats["noise_type_counts"]),
+             "k_distribution":dict(self.stats["k_distribution"]),"snr_statistics":{}}
+        for mode,lst in self.stats["snr_values"].items():
+            if lst:
+                out["snr_statistics"][mode]={
+                    "count":len(lst),"min":float(np.min(lst)),"max":float(np.max(lst)),
+                    "mean":float(np.mean(lst)),"std":float(np.std(lst))}
+        return out
 
     def reset_statistics(self):
-        self.stats = {
-            "total_mixed": 0,
-            "noise_type_counts": Counter(),
-            "k_distribution": Counter(),
-            "snr_values": defaultdict(list),
-        }
+        self.stats={"total_mixed":0,"noise_type_counts":Counter(),
+                    "k_distribution":Counter(),"snr_values":defaultdict(list)}
 
 
 class OnlineMixingDataset:
-    def __init__(self, clean_data, noise_root: str, config: Optional[Dict] = None,
-                 mode: str = "train", transform=None, seed: Optional[int] = None):
-        self.clean_data = clean_data
-        self.mode = mode
-        self.transform = transform
-        self.mixer = OnlineNoiseMixer(noise_root=noise_root, config=config, cache_noise=True, seed=seed)
-
-    def __len__(self):
-        return len(self.clean_data)
-
+    def __init__(self, clean_data, noise_root, config=None, mode="train", transform=None, seed=None):
+        self.clean_data=clean_data; self.mode=mode; self.transform=transform
+        self.mixer=OnlineNoiseMixer(noise_root,config,cache_noise=True,seed=seed)
+    def __len__(self): return len(self.clean_data)
     def __getitem__(self, idx):
-        clean = self.clean_data[idx]
-        clean_np = clean.numpy() if hasattr(clean, "numpy") else np.asarray(clean)
-        noisy_np, _ = self.mixer.mix(clean_np, mode=self.mode)
-
-        if self.transform:
-            return self.transform(noisy_np), self.transform(clean_np)
-
+        clean=self.clean_data[idx]
+        cn=clean.numpy() if hasattr(clean,"numpy") else np.asarray(clean)
+        nn,_=self.mixer.mix(cn,mode=self.mode)
+        if self.transform: return self.transform(nn),self.transform(cn)
         try:
             import torch
-            return torch.as_tensor(noisy_np, dtype=torch.float32), torch.as_tensor(clean_np, dtype=torch.float32)
-        except ImportError:
-            return noisy_np, clean_np
+            return torch.as_tensor(nn,dtype=torch.float32),torch.as_tensor(cn,dtype=torch.float32)
+        except ImportError: return nn,cn
 
 
 # ============================================================================
 # CLI
 # ============================================================================
 def main():
-    parser = argparse.ArgumentParser(description="sEMG Noise Module v6.3.0")
-    parser.add_argument("--config", type=str, default="config.yaml")
-    parser.add_argument("--mode", type=str, choices=["train", "test", "both"], default="both")
-    parser.add_argument("--demo", action="store_true")
-    args = parser.parse_args()
+    parser=argparse.ArgumentParser(description="sEMG Noise v6.8.0")
+    parser.add_argument("--config",default="config.yaml")
+    parser.add_argument("--mode",choices=["train","test","both"],default="both")
+    parser.add_argument("--demo",action="store_true")
+    args=parser.parse_args()
 
     import yaml
-    with open(args.config, "r") as f:
-        config = yaml.safe_load(f)
+    with open(args.config) as f: config=yaml.safe_load(f)
 
     if args.demo:
-        out_base = get_output_base(config)
-        noise_root = os.path.join(out_base, config["paths"]["output"]["noise_train"])
+        noise_root=os.path.join(get_output_base(config),config["paths"]["output"]["noise_train"])
         if not os.path.isdir(noise_root):
-            print(f"[ERROR] Noise library not found: {noise_root}")
-            print("Run: python noise.py --mode both")
-            return
+            print("[ERROR] Run: python noise.py --mode both"); return
+        seed=int(config.get("project",{}).get("random_seed",12345))
+        mixer=OnlineNoiseMixer(noise_root,config,cache_noise=True,seed=seed)
+        clean=np.sin(2*np.pi*100*np.linspace(0,2,2000,endpoint=False))
 
-        seed = int(config.get("project", {}).get("random_seed", 12345))
-        mixer = OnlineNoiseMixer(noise_root=noise_root, config=config, cache_noise=True, seed=seed)
-        clean = np.sin(2 * np.pi * 100 * np.linspace(0, 2, 2000, endpoint=False)).astype(np.float64)
+        print("\n[Training demo — SNR sampled from full range, WGN capped if needed]")
+        for i in range(4):
+            _,info=mixer.mix(clean,mode="train",seed=seed+i)
+            comp=(info["snr"]+10*np.log10(info["k"])) if info["has_wgn"] else None
+            cap="*CAPPED*" if info.get("wgn_capped") else ""
+            wgn_note=f"WGN comp={comp:+.1f}dB {cap}" if comp is not None else "no WGN"
+            print(f"  SNR={info['snr']:+.1f}dB  k={info['k']}  {wgn_note}  types={info['noise_types']}")
 
-        print("\n[Training mode]")
-        for i in range(3):
-            noisy, info = mixer.mix(clean, mode="train", seed=seed + i)
-            print(f"  SNR={info['snr']:.2f} dB, k={info['k']}, types={info['noise_types']}")
-            print(f"  paths={[os.path.basename(p) for p in info['noise_paths']]}")
+        print("\n[k=5 at low SNR (capping demo)]")
+        for snr in [-15,-10,-5]:
+            _,info=mixer.mix(clean,mode="test",snr=snr,k=5,seed=seed+snr)
+            comp=snr+10*np.log10(5)
+            cap="→ WGN capped at -5dB" if info.get("wgn_capped") else "→ equal split"
+            print(f"  total={snr:+d}dB  WGN component={comp:+.1f}dB  {cap}")
 
-        print("\n[Testing mode]")
-        for snr in [-10, 0, 10]:
-            noisy, info = mixer.mix(clean, mode="test", snr=snr, k=2, seed=seed + int(snr))
-            print(f"  SNR={info['snr']:.2f} dB, k={info['k']}, types={info['noise_types']}")
-
-        print("\n[Mixer Statistics]")
-        print(json.dumps(mixer.get_statistics(), indent=2))
+        print("\n[Stats]"); print(json.dumps(mixer.get_statistics(),indent=2))
         return
 
-    if args.mode in ["train", "both"]:
-        build_noise_library(config, mode="train")
-    if args.mode in ["test", "both"]:
-        build_noise_library(config, mode="test")
-
-    print("\n✓ Noise library generation complete!")
+    if args.mode in ("train","both"): build_noise_library(config,"train")
+    if args.mode in ("test","both"):  build_noise_library(config,"test")
+    print("\n✓ Done")
 
 
 if __name__ == "__main__":

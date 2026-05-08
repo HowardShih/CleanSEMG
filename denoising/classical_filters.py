@@ -5,7 +5,7 @@ tradition_filters.py  v2  —  Traditional baseline filter implementations.
 
 Methods
 -------
-HP       : Butterworth high-pass filter
+HP/IIR   : TrustEMG-Net contaminant-aware IIR filter chain
 TS       : Template subtraction (ECG artefact removal)
 EMD      : EMD + noise-index-based thresholding per IMF
 VMD      : VMD + interval soft-thresholding per VMF  (VMD-SIT / VMD-IIT)
@@ -13,16 +13,17 @@ CEEMDAN  : CEEMDAN + noise-index-based thresholding per IMF
 
 Noise-type handling summary
 ---------------------------
-             HP   TS    EMD               VMD               CEEMDAN
-PLI (P)      ○    ×     notch each IMF    notch each VMF    notch each IMF
-ECG (E)      ×    ○     corr+HP each IMF  (skip)            corr+HP each IMF
-MOA (m)      ×    ×     freq<20→zero      freq<20→zero      freq<20→zero
-BW  (B)      ×    ×     freq<10→zero      freq<10→zero      freq<10→zero
-WGN (WG)     ×    ×     noise-idx thr     VMD-IIT           noise-idx thr
-Color (Co)   △    ×     HP-pre + generic  HP-pre + generic  HP-pre + generic
+             HP/IIR                 TS    EMD               VMD               CEEMDAN
+PLI (P)      notch 60 Hz, Q=5       ×     notch each IMF    notch each VMF    notch each IMF
+ECG (E)      HP 40 Hz               ○     corr+HP each IMF  IIR fallback      corr+HP each IMF
+MOA (m)      HP 40 Hz               ×     freq<20→zero      freq<20→zero      freq<20→zero
+BW  (B)      HP 10 Hz               ×     freq<10→zero      freq<10→zero      freq<10→zero
+WGN (WG)     BP 20–500 Hz           ×     noise-idx thr     VMD-IIT           noise-idx thr
+Color (Co)   optional BP 20–500 Hz  ×     HP-pre + generic  HP-pre + generic  HP-pre + generic
 
-△ HP is partially effective for brown noise (most energy below ~20 Hz)
-  but cannot remove pink noise whose energy overlaps the sEMG band.
+Note: the external method key remains "hp" for backward compatibility with
+existing scripts, but the implementation follows TrustEMG-Net's IIR-filter
+baseline rather than a single high-pass filter.
 
 Color noise (pink / brown) references
 --------------------------------------
@@ -105,6 +106,39 @@ def _is_color(noise_type: str) -> bool:
     nt = (noise_type or "").lower()
     return "color" in nt or "colour" in nt or "pink" in nt or "brown" in nt
 
+def _is_moa(noise_type: str) -> bool:
+    nt = (noise_type or "").upper()
+    return "MOA" in nt or "+M" in nt or nt == "M" or "MOTION" in nt
+
+
+def _infer_moa_source(noise_type: str = "", noise_paths: str = "") -> str:
+    s = f"{noise_type} {noise_paths}".lower()
+
+    if "moa_machado" in s or "machado" in s:
+        return "machado"
+
+    if "moa_nstdb" in s or "nstdb" in s:
+        return "nstdb"
+
+    return "unknown"
+
+
+def _infer_moa_hp_cutoff(
+    noise_type: str = "",
+    noise_paths: str = "",
+    moa_machado_hp_hz: float = 40.0,
+    moa_nstdb_hp_hz: float = 20.0,
+    moa_default_hp_hz: float = 40.0,
+) -> float:
+    src = _infer_moa_source(noise_type=noise_type, noise_paths=noise_paths)
+
+    if src == "machado":
+        return float(moa_machado_hp_hz)
+
+    if src == "nstdb":
+        return float(moa_nstdb_hp_hz)
+
+    return float(moa_default_hp_hz)
 
 # ============================================================================
 # ── Soft / interval thresholding helpers ─────────────────────────────────
@@ -180,22 +214,135 @@ def _dominant_freq_hz(x: np.ndarray, fs: int) -> float:
 
 
 # ============================================================================
-# ── HP filter ─────────────────────────────────────────────────────────────
+# ── TrustEMG-Net IIR filter baseline ──────────────────────────────────────
 # ============================================================================
+
+def _can_filtfilt(x: np.ndarray, b: np.ndarray, a: np.ndarray) -> bool:
+    """Check whether signal is long enough for scipy.signal.filtfilt."""
+    padlen = 3 * (max(len(a), len(b)) - 1)
+    return x.size > max(27, padlen)
+
+
+def _apply_notch_filter(x: np.ndarray, fs: int, center_hz: float,
+                        quality: float) -> np.ndarray:
+    """Zero-phase IIR notch filter."""
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    if center_hz <= 0 or center_hz >= fs / 2.0:
+        return x.copy()
+    b, a = iirnotch(w0=float(center_hz), Q=float(quality), fs=float(fs))
+    if not _can_filtfilt(x, b, a):
+        return x.copy()
+    return filtfilt(b, a, x)
+
 
 def apply_hp_filter(x: np.ndarray, fs: int, cutoff_hz: float,
                     order: int = 4) -> np.ndarray:
     """
-    Butterworth high-pass filter (zero-phase).
-    Ref: Wang et al. TrustEMG-Net, IEEE JBHI 2025.
+    Zero-phase Butterworth high-pass filter.
+
+    Kept as a low-level helper and for backwards compatibility.  The baseline
+    method keyed as ``hp`` should call ``apply_trustemg_iir_filter`` below.
     """
     x = np.asarray(x, dtype=np.float64).reshape(-1)
     nyq = fs / 2.0
     Wn  = min(max(float(cutoff_hz) / nyq, 1e-4), 0.9999)
     b, a = butter(order, Wn, btype="high")
-    if x.size < max(27, 3 * order + 1):
+    if not _can_filtfilt(x, b, a):
         return x.copy()
     return filtfilt(b, a, x)
+
+
+def _apply_bandpass_filter(x: np.ndarray, fs: int, low_hz: float,
+                           high_hz: float, order: int = 4) -> np.ndarray:
+    """Zero-phase Butterworth band-pass filter with Nyquist-safe high cutoff."""
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    nyq = fs / 2.0
+    low = max(float(low_hz) / nyq, 1e-4)
+    high = min(float(high_hz) / nyq, 0.9999)
+    if high <= low:
+        # At fs=1000, TrustEMG-Net's 500 Hz upper cutoff equals Nyquist.
+        # Use a numerically valid high edge just below Nyquist.
+        high = min(0.9999, max(low + 1e-4, 0.9999))
+    b, a = butter(order, [low, high], btype="bandpass")
+    if not _can_filtfilt(x, b, a):
+        return x.copy()
+    return filtfilt(b, a, x)
+
+
+def apply_trustemg_iir_filter(
+    x: np.ndarray,
+    fs: int = 1000,
+    noise_type: str = "",
+    noise_paths: str = "",
+    order: int = 4,
+    bw_hp_hz: float = 10.0,
+    pli_center_hz: float = 60.0,
+    pli_quality: float = 5.0,
+    moa_machado_hp_hz: float = 40.0,
+    moa_nstdb_hp_hz: float = 20.0,
+    moa_default_hp_hz: float = 40.0,
+    ecg_hp_hz: float = 40.0,
+    wgn_bp_low_hz: float = 20.0,
+    wgn_bp_high_hz: float = 500.0,
+    color_as_wgn: bool = True,
+) -> np.ndarray:
+    """
+    TrustEMG-Net-style contaminant-aware IIR baseline.
+
+    The filter chain follows the supplementary material of TrustEMG-Net:
+      - BW  : 4th-order Butterworth high-pass, 10 Hz
+      - PLI : notch filter, 60 Hz, Q=5
+      - MOA : 4th-order Butterworth high-pass, 40 Hz for the Machado MOA set
+      - ECG : 4th-order Butterworth high-pass, 40 Hz
+      - WGN : 4th-order Butterworth band-pass, 20--500 Hz
+
+    Multiple filters are cascaded when ``noise_type`` contains multiple
+    contaminants, e.g. ``"PLI+WGN"``.  ``Color`` is not explicitly listed in
+    TrustEMG-Net's IIR table; by default it is treated as WGN-like broadband
+    contamination because this benchmark contains colored broadband noise.
+    Set ``color_as_wgn=False`` for a stricter TrustEMG-only implementation.
+    """
+    y = np.asarray(x, dtype=np.float64).reshape(-1).copy()
+    nt = noise_type or ""
+
+    # Line-frequency interference: apply notch before broad spectral filters.
+    if _has(nt, "P"):
+        y = _apply_notch_filter(y, fs=fs, center_hz=pli_center_hz,
+                                quality=pli_quality)
+
+    # Broadband noise: TrustEMG-Net uses a 20--500 Hz Butterworth band-pass.
+    if _has(nt, "WG") or (color_as_wgn and _is_color(nt)):
+        y = _apply_bandpass_filter(y, fs=fs, low_hz=wgn_bp_low_hz,
+                                   high_hz=wgn_bp_high_hz, order=order)
+
+    # Baseline wander: included for completeness although our current noise
+    # pool does not use BW as a primary contaminant label.
+    if _has(nt, "B"):
+        y = apply_hp_filter(y, fs=fs, cutoff_hz=bw_hp_hz, order=order)
+
+    # Low-frequency physiological / motion artifacts.
+    # Our ``MOA`` corresponds to the Machado motion-artifact dataset used by
+    # TrustEMG-Net, for which the supplementary table specifies 40 Hz.
+    if _has(nt, "E") or _is_moa(nt):
+        hp_cutoff = 0.0
+
+        if _has(nt, "E"):
+            hp_cutoff = max(hp_cutoff, float(ecg_hp_hz))
+
+        if _is_moa(nt):
+            moa_cutoff = _infer_moa_hp_cutoff(
+                noise_type=noise_type,
+                noise_paths=noise_paths,
+                moa_machado_hp_hz=moa_machado_hp_hz,
+                moa_nstdb_hp_hz=moa_nstdb_hp_hz,
+                moa_default_hp_hz=moa_default_hp_hz,
+            )
+            hp_cutoff = max(hp_cutoff, moa_cutoff)
+
+        if hp_cutoff > 0:
+            y = apply_hp_filter(y, fs=fs, cutoff_hz=hp_cutoff, order=order)
+
+    return y
 
 
 # ============================================================================
@@ -719,6 +866,7 @@ def apply_method(
     params: dict,
     fs: int = 1000,
     noise_type: str = "",
+    noise_paths: str = "",
 ) -> Tuple[np.ndarray, bool]:
     """
     Unified dispatch.
@@ -729,15 +877,29 @@ def apply_method(
     method = method.lower()
 
     def _hp_fallback(p_hp):
-        return apply_hp_filter(noisy_raw, fs=fs,
-                                cutoff_hz=p_hp["best_cutoff_hz"],
-                                order=p_hp["order"])
+        return apply_trustemg_iir_filter(
+            noisy_raw,
+            fs=fs,
+            noise_type=noise_type,
+            noise_paths=noise_paths,
+            order=p_hp.get("order", 4),
+            bw_hp_hz=p_hp.get("bw_hp_hz", 10.0),
+            pli_center_hz=p_hp.get("pli_center_hz", 60.0),
+            pli_quality=p_hp.get("pli_quality", 5.0),
+            moa_machado_hp_hz=p_hp.get("moa_machado_hp_hz", 40.0),
+            moa_nstdb_hp_hz=p_hp.get("moa_nstdb_hp_hz", 20.0),
+            moa_default_hp_hz=p_hp.get("moa_default_hp_hz", 40.0),
+            ecg_hp_hz=p_hp.get("ecg_hp_hz", 40.0),
+            wgn_bp_low_hz=p_hp.get("wgn_bp_low_hz", 20.0),
+            wgn_bp_high_hz=p_hp.get("wgn_bp_high_hz", 500.0),
+            color_as_wgn=p_hp.get("color_as_wgn", True),
+        )
 
     if method == "hp":
-        p = params["hp"]
-        return apply_hp_filter(noisy_raw, fs=fs,
-                                cutoff_hz=p["best_cutoff_hz"],
-                                order=p["order"]), True
+        # The method key remains "hp" for compatibility with existing result
+        # scripts, but this is now the TrustEMG-Net IIR filter-chain baseline.
+        p = params.get("hp", {})
+        return _hp_fallback(p), True
 
     elif method == "ts":
         p = params["ts"]
