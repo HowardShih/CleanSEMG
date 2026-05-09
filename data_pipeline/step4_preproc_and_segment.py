@@ -2,11 +2,24 @@
 # -*- coding: utf-8 -*-
 #${CLEANSEMG_ROOT}/step4_preproc_and_segment.py
 """
-Step 4 (v6.2.8-FINAL): Preproc + Segment from qc_index
-CRITICAL CHANGES:
-- Rename scale_factor → clean_scale_factor (clarity)
-- Still saves RAW segments (no normalization)
-- Training will compute noisy-scale dynamically
+Step 4: Preprocess accepted trial-channel signals and export fixed-length segments.
+
+Input
+-----
+- outputs/.../splits/subject_split_crossDB.json
+- outputs/.../preprocessed/<DB>/logs/qc_index.csv
+
+Output
+------
+- outputs/.../segments/.../<split>/raw/*.npy
+- outputs/.../segments/.../<split>/scale/*_clean_scale.npy
+- outputs/.../segments/.../manifests/segment_manifest.csv
+
+Design
+------
+- Saved segments remain in raw amplitude scale after bandpass/resampling.
+- clean_scale_factor is stored only as a clean-signal reference.
+- Training should compute noisy-input scale factors dynamically after online mixing.
 """
 
 import os
@@ -28,19 +41,25 @@ from scipy.signal import butter, filtfilt, resample_poly
 
 
 # =============================================================================
-# Normalization Functions (只用於計算 scale factor)
+# Normalization Functions
 # =============================================================================
 def compute_scale_factor(x: np.ndarray, method: str = "Q99", percentile: float = 0.99) -> float:
     """
-    計算 normalization scale factor
-    
-    Args:
-        x: 輸入信號 [N]
-        method: 正規化方法 (Q99, Q95, RMS, MAD, STD)
-        percentile: 當 method 為 Q99/Q95 時使用的百分位數
-    
-    Returns:
-        scale: float, 用於正規化的縮放因子
+    Compute a segment-level amplitude scale factor.
+
+    Parameters
+    ----------
+    x:
+        One-dimensional input signal.
+    method:
+        Scale estimator. Supported values: Q99, Q95, Q, RMS, MAD, STD.
+    percentile:
+        Quantile used only when method is Q.
+
+    Returns
+    -------
+    float
+        Positive scale factor. Returns 1.0 for empty or near-zero signals.
     """
     x = np.asarray(x, dtype=np.float64).reshape(-1)
     if x.size == 0:
@@ -199,10 +218,10 @@ def parse_subject_exercise_from_path(p: str) -> Tuple[int, int]:
 # Step 4 - v6.2.8 (Semantic Clarity)
 # =============================================================================
 def step4_preproc_and_segment(config: Dict, force: bool = False):
-    print(f"\n{'='*70}\nStep 4 (v6.2.8-FINAL): Preproc + Segment\n{'='*70}")
-    print("✅ Saving RAW segments (no normalization)")
-    print("✅ Computing clean_scale_factor (reference only)")
-    print("⚠️  Training will compute noisy-scale dynamically")
+    print(f"\n{'='*70}\nStep 4: Preprocess and Segment\n{'='*70}")
+    print("[INFO] Saving raw-amplitude segments after bandpass/resampling")
+    print("[INFO] Recording clean_scale_factor as a reference")
+    print("[INFO] Training computes noisy-input scale dynamically")
 
     split_json = os.path.join(get_splits_root(config), "subject_split_crossDB.json")
     if not os.path.exists(split_json):
@@ -228,7 +247,7 @@ def step4_preproc_and_segment(config: Dict, force: bool = False):
     bp_high = float(bp_cfg.get("high_cutoff", 500.0))
     bp_order = int(bp_cfg.get("order", 4))
     
-    # Normalization config (只用於計算 clean-scale reference)
+    # Scale-factor helpers
     norm_cfg = _get_nested(config, ["normalization"], default={}) or {}
     norm_enabled = bool(norm_cfg.get("enabled", True))
     norm_method = str(norm_cfg.get("method", "Q99"))
@@ -256,7 +275,6 @@ def step4_preproc_and_segment(config: Dict, force: bool = False):
         os.path.join(seg_root, "manifests")
     )
 
-    # ===== 重要：CSV header 改名 =====
     with open(manifest_csv, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -329,13 +347,13 @@ def step4_preproc_and_segment(config: Dict, force: bool = False):
                     e0 = s0 + pts
                     seg_y = x_proc[s0:e0]
 
-                    # 計算 clean-scale (reference only)
+                    # Compute a clean-reference scale factor without normalizing the saved segment.
                     if norm_enabled:
                         clean_scale = compute_scale_factor(seg_y, method=norm_method, percentile=norm_pct)
                     else:
                         clean_scale = 1.0
 
-                    # 保存原始信號（未 normalize）
+                    # Save the segment in raw amplitude scale.
                     segment_id = f"{cross_sid}_ch{ch}_t{trial_id}_seg{seg_idx}"
                     raw_path = f"{split}/raw/{segment_id}.npy"
                     clean_scale_path = f"{split}/scale/{segment_id}_clean_scale.npy"
@@ -364,8 +382,8 @@ def step4_preproc_and_segment(config: Dict, force: bool = False):
 
     print(f"\n✓ Step 4 complete. Total: {sum(stats.values())} segments.")
     print(f"  Train: {stats['train']}, Val: {stats['val']}, Test: {stats['test']}")
-    print(f"\n✅ Segments saved in RAW form")
-    print(f"✅ clean_scale_factor saved (reference only)")
+    print(f"\n Segments saved in RAW form")
+    print(f" clean_scale_factor saved (reference only)")
     print(f"⚠️  Training will compute noisy-scale dynamically!")
 
 

@@ -1,6 +1,5 @@
 # ==============================================================================
 # sEMG Cross-DB Denoising Pipeline Configuration
-# Version 6.2.1 - 修正版本
 # ${CLEANSEMG_ROOT}/config.yaml
 # ==============================================================================
 
@@ -65,10 +64,9 @@ preprocessing:
     order: 4
     filter_type: "butterworth"
 
-  # 新增：Notch filter 配置 (用於 ECG 和 MOA)
   notch:
     enabled: true
-    freq_hz: 50  # 50 or 60 Hz
+    freq_hz: 50
     q: 30
 
   segmentation:
@@ -77,13 +75,12 @@ preprocessing:
     threshold: 0.02
     overlap: 0.0
 
-# 修正：完整的 normalization 配置
 normalization:
   enabled: true
-  method: "Q99"         # Q99, Q95, RMS, MAD, STD
-  percentile: 0.99      # 當 method 為 Q99/Q95 時使用
+  method: "Q99"         
+  percentile: 0.99      
   clip_range: [-1.0, 1.0]
-  save_scale: true      # 儲存 scale factor 為 .npy 檔案
+  save_scale: true     
 
 quality_control:
   spectral:
@@ -105,10 +102,9 @@ quality_control:
     nan_is_fail: true
     half_window_bins: 40
     threshold: 5.0
-    # 固定視窗參數
     window_s: 2.0
     hop_s: 1.0
-    aggregate: "max"  # max or mean
+    aggregate: "max"
 
 splitting:
   train_ratio: 0.80
@@ -150,16 +146,12 @@ noise:
       pink_alpha: 1.0
       brown_alpha: 2.0
 
-    # 修正：ECG 配置明確分離 record split 與 segment count
     ecg:
-      # Record-level split (持久化)
-      test_record_count: 4  # 保留 4 個 record 給 test
+      test_record_count: 4 
       
-      # Segment generation
-      train_segments: 24    # 生成 24 個 200s segments (train)
-      test_segments: 4      # 生成 4 個 200s segments (test)
+      train_segments: 24   
+      test_segments: 4  
       
-      # Sampling strategy
       hourly_sampling: true
       segments_per_hour: 1
       total_hours: 24
@@ -168,14 +160,14 @@ noise:
     train_count:
       PLI: 20
       WGN: 20
-      ECG: 24   # 對應 train_segments
+      ECG: 24  
       MOA: -1
       Color: 20
 
     test_count:
       PLI: 10
       WGN: 10
-      ECG: 4    # 對應 test_segments
+      ECG: 4   
       MOA: -1
       Color: 10
 
@@ -224,9 +216,8 @@ model:
   mdepth: 4
   pdepth: 4
 
-  # GroupNorm option (建議用於 small batch)
-  use_gn: false  # true to use GroupNorm instead of InstanceNorm
-  gn_groups: 8   # 必須整除 dense_channel
+  use_gn: false  
+  gn_groups: 8  
 
   sampling_rate: 1000
   n_fft: 512
@@ -234,28 +225,26 @@ model:
   win_size: 512
 
   beta: 1.0
-  mask_hp_cut_hz: 0  # >0 to enable high-pass gate
+  mask_hp_cut_hz: 0  
 
   loss_fn: "time+com+con"
   loss_weights:
     time: 0.25
     com: 0.40
     con: 0.25
-    mr: 0.08    # MR-STFT (ablation controlled)
+    mr: 0.08    
 
   lsig_L2: 5.0e-5
 
-  # MR-STFT Loss Config (optional)
   w_sc: 1.0
   w_log_mag: 1.0
   mrstft_log_eps: 1.0e-7
   mrstft_eps: 1.0e-9
 
-# Ablation Study Flags
 ablation:
-  use_mrstft: true   # Multi-Resolution STFT Loss
-  use_entropy: true  # Mask Entropy (監控用，不參與優化)
-  use_phase: true    # Phase Prediction (false = 直接用 noisy phase)
+  use_mrstft: true   
+  use_entropy: true
+  use_phase: true    
 
 metrics:
   sampling_rate: 1000

@@ -2,15 +2,17 @@
 # -*- coding: utf-8 -*-
 # ${CLEANSEMG_ROOT}/step1_qc_raw.py
 """
-Step 1 (v6.2): RAW trial parsing + QC metrics extraction
-Output:
-  - outputs/.../preprocessed/<DB>/logs/trial_manifest.csv
-  - outputs/.../preprocessed/<DB>/logs/qc_metrics_raw.csv
-Design:
-  - QC computed on RAW (no bandpass).
-  - Output index/metrics only (no masking, no editing labels).
+Step 1: Parse raw trials and extract QC metrics.
 
-v6.2-debug: Added verbose per-file logging for DB2 E1/E2/E3 diagnosis.
+Outputs
+-------
+- outputs/.../preprocessed/<DB>/logs/trial_manifest.csv
+- outputs/.../preprocessed/<DB>/logs/qc_metrics_raw.csv
+
+Design
+------
+- QC metrics are computed on raw signals before bandpass filtering.
+- This step writes manifests and metrics only; it does not edit labels or export cleaned signals.
 """
 
 import os
@@ -107,7 +109,7 @@ def load_emg_mat(mat_path: str, db_name: str, fs: int, verbose: bool = False) ->
     m = loadmat(mat_path, squeeze_me=True, struct_as_record=False)
     dbu = db_name.upper()
 
-    # --- DEBUG: show all keys in the mat file ---
+    # Print MAT-file keys only when verbose mode is enabled.
     all_keys = [k for k in m.keys() if not k.startswith('__')]
     if verbose:
         print(f"    [MAT keys] {os.path.basename(mat_path)}: {all_keys}")
@@ -133,7 +135,7 @@ def load_emg_mat(mat_path: str, db_name: str, fs: int, verbose: bool = False) ->
     if emg.ndim != 2:
         raise ValueError(f"EMG must be 2D, got {emg.shape} in {mat_path}")
 
-    # enforce [N, C]
+    # Standardize EMG layout to [time, channel].
     if emg.shape[0] < emg.shape[1]:
         emg = emg.T
     N, C = emg.shape
@@ -420,11 +422,11 @@ def compute_rest_rms_per_ch(emg: np.ndarray, restim: np.ndarray) -> np.ndarray:
 # =============================================================================
 
 def step1_qc_raw(config: Dict, db_name: str, force: bool = False):
-    print(f"\n{'='*70}\nStep 1 (v6.2): QC metrics on RAW  [{db_name}]\n{'='*70}")
+    print(f"\n{'='*70}\nStep 1: QC metrics on RAW  [{db_name}]\n{'='*70}")
 
-    # DB2 診斷模式：對前幾個檔案開啟 verbose
+    # Enable limited DB2 diagnostics to verify E1/E2/E3 parsing.
     is_db2 = (db_name.upper() == "DB2")
-    VERBOSE_N_FILES = 6  # 每個 exercise 至少 2 個 subject → 印出前 6 個
+    VERBOSE_N_FILES = 6 
 
     input_root = _get_nested(config, ["paths", "datasets", db_name])
     if input_root is None:
@@ -467,7 +469,7 @@ def step1_qc_raw(config: Dict, db_name: str, force: bool = False):
     print(f"FS(raw): {fs} Hz")
 
     if is_db2:
-        # 印出找到的 E1/E2/E3 檔案數量分佈
+        # Report DB2 exercise coverage during diagnostic runs.
         e1 = sum(1 for f in mat_files if re.search(r'[Ee]1', os.path.basename(f)))
         e2 = sum(1 for f in mat_files if re.search(r'[Ee]2', os.path.basename(f)))
         e3 = sum(1 for f in mat_files if re.search(r'[Ee]3', os.path.basename(f)))
@@ -499,7 +501,7 @@ def step1_qc_raw(config: Dict, db_name: str, force: bool = False):
     total_trials = 0
     total_trial_ch = 0
 
-    # Skip counters for summary
+    # Track file-level skip reasons for the final report.
     skip_reasons = {"load_error": 0, "restim_none": 0, "no_trials": 0}
 
     for file_idx, mat_path in enumerate(tqdm(mat_files, desc=f"Step1 RAW QC {db_name}")):
@@ -608,7 +610,7 @@ def step1_qc_raw(config: Dict, db_name: str, force: bool = False):
     print(f"  Total trial×ch  : {total_trial_ch}")
 
     if is_db2:
-        # Per-exercise summary from trial_manifest
+        # Summarize DB2 trial coverage after parsing.
         try:
             df_man = pd.read_csv(trial_manifest_csv)
             if not df_man.empty:

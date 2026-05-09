@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Baseline Waveform Models — Inference Runner v2.1
-# Metrics synced with inference.py v6.7.0
+# Baseline Waveform Models — Inference Runner
+# Metrics synced with inference.py
 # SDEMG added: uses T=50 reverse diffusion steps (slower than L1 models)
 
 set -euo pipefail
@@ -101,7 +101,7 @@ else
 fi
 
 echo "=============================================================="
-echo "Baseline Inference Runner v2.1"
+echo "Baseline Inference Runner"
 echo "  config:           $CONFIG"
 echo "  gpu:              $GPU"
 echo "  test_data:        $TEST_DATA_PATH"

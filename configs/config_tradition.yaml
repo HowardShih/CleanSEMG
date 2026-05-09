@@ -18,17 +18,24 @@
 exp:
   name: "tradition_baseline_v2"
 
-# ── High-Pass Filter ──────────────────────────────────────────────────────────
+# ── TrustEMG-Net IIR Filter Chain ─────────────────────────────────────────────
 hp:
   order: 4
-  filter_type: "butterworth"
-  default_cutoff_hz: 40.0        # Wang et al. JBHI 2025 recommended
+  filter_type: "trustemg_iir_chain"
+
+  bw_hp_hz: 10.0
+  pli_center_hz: 60.0
+  pli_quality: 5.0
+  moa_machado_hp_hz: 40.0
+  moa_nstdb_hp_hz: 20.0
+  moa_default_hp_hz: 40.0
+  ecg_hp_hz: 40.0
+  wgn_bp_low_hz: 20.0
+  wgn_bp_high_hz: 500.0
+  color_as_wgn: true
 
   sweep:
-    enabled: true
-    cutoffs: [20, 30, 40, 50, 60, 80, 100]    # Hz
-    metric: "SNRimp"
-    split: "val"
+    enabled: false
 
 # ── Template Subtraction ──────────────────────────────────────────────────────
 ts:
@@ -86,7 +93,7 @@ vmd:
 # trials=100, epsilon=0.005 follow Torres et al. 2011 and common sEMG usage
 # (Zong et al. Circuits Syst. Signal Process. 41, 2022).
 ceemdan:
-  trials: 20             # noise-ensemble size
+  trials: 20              # noise-ensemble size
   epsilon: 0.005          # noise amplitude relative to signal std
   f_min_hz: 20.0
   f_max_hz: 500.0

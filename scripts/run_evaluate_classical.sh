@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Traditional Baseline Inference v2  (HP + TS + EMD + VMD + CEEMDAN)
-# Metrics synced with inference.py v6.7.0
+# Traditional Baseline Inference  (HP + TS + EMD + VMD + CEEMDAN)
+# Metrics synced with inference.py
 
 set -euo pipefail
 
@@ -114,7 +114,7 @@ fi
 mkdir -p "$INFER_OUT"
 
 echo "=============================================================="
-echo "Traditional Baseline Inference v2"
+echo "Traditional Baseline Inference"
 echo "  config:      $CONFIG"
 echo "  params:      $PARAMS"
 echo "  test_data:   $TEST_DATA_PATH"

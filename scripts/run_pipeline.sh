@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Cross-DB sEMG Denoising Pipeline Runner (v6.2.8-DATA-ONLY)
+# Cross-DB sEMG Denoising Pipeline Runner (DATA-ONLY)
 # Scope: Data preparation only (Step1-4, noise generation, test data)
 # Training: Use run_train.sh separately
 # Inference: Use run_inference.sh separately
@@ -136,7 +136,7 @@ for stage in "${STAGE_LIST[@]}"; do
 done
 
 echo "=============================================================="
-echo "Cross-DB sEMG Pipeline (v6.2.8-DATA-ONLY)"
+echo "Cross-DB sEMG Pipeline (DATA-ONLY)"
 echo "=============================================================="
 echo "Config:           $CONFIG"
 echo "Stages:           ${STAGE_LIST[*]}"
@@ -185,7 +185,7 @@ run_data() {
   python3 step3_subject_split.py --config "$CONFIG" $FORCE_FLAG
 
   echo ""
-  echo "---- [DATA] Step4 preprocess + segment (v6.2.8) ----"
+  echo "---- [DATA] Step4 preprocess + segment ----"
   echo "⚠️  Saving RAW segments + clean_scale_factor (reference only)"
   python3 step4_preproc_and_segment.py --config "$CONFIG" $FORCE_FLAG
   
@@ -230,7 +230,7 @@ run_testdata() {
     rm -rf "$TEST_DATA_DIR" || true
   fi
   
-  echo "⚠️  Generating with Noisy-Scale Policy (v6.2.7)"
+  echo "⚠️  Generating with Noisy-Scale Policy"
   echo "   Scale computed from noisy_raw to avoid clipping"
   
   python3 generate_test_data.py \

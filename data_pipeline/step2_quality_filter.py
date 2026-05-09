@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # ${CLEANSEMG_ROOT}/step2_quality_filter.py
 """
-Step 2 (v6.2): Apply QC rules + grading
+Step 2: Apply QC rules + grading
 Input:
   - outputs/.../preprocessed/<DB>/logs/qc_metrics_raw.csv
 Output:
@@ -76,7 +76,7 @@ def make_cross_subject_id(db_name: str, subject_id: int, file_rel: Optional[str]
 # =============================================================================
 
 def step2_quality_filter(config: Dict, db_name: str, force: bool = False):
-    print(f"\n{'='*70}\nStep 2 (v6.2): Quality Filter -> qc_index  [{db_name}]\n{'='*70}")
+    print(f"\n{'='*70}\nStep 2: Quality Filter -> qc_index  [{db_name}]\n{'='*70}")
 
     out_root = get_db_out_root(config, db_name)
     logs_dir = os.path.join(out_root, "logs")

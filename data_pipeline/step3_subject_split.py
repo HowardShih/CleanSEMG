@@ -2,9 +2,22 @@
 # -*- coding: utf-8 -*-
 #${CLEANSEMG_ROOT}/step3_subject_split.py
 """
-Step 3 (v6.2): Cross-DB subject split using qc_index
-Output:
-  - outputs/.../splits/subject_split_crossDB.json
+Step 3: Create cross-database subject-level train/validation/test splits.
+
+Input
+-----
+- outputs/.../preprocessed/<DB>/logs/qc_index.csv
+
+Output
+------
+- outputs/.../splits/subject_split_crossDB.json
+- outputs/.../splits/step3_subject_split_report.txt
+
+Design
+------
+- The configured test database is held out entirely.
+- Remaining databases are split at the subject level.
+- Validation subjects are selected per database to reduce dataset-size imbalance.
 """
 
 import os
@@ -60,7 +73,7 @@ def ensure_dirs(*dirs: str):
 
 
 def step3_subject_split(config: Dict, force: bool = False):
-    print(f"\n{'='*70}\nStep 3 (v6.2): Cross-DB Subject Split (Stratified)\n{'='*70}")
+    print(f"\n{'='*70}\nStep 3: Cross-DB Subject Split (Stratified)\n{'='*70}")
 
     test_db = str(_get_nested(config, ["datasets", "test_db"], default="DB2"))
     train_valid_dbs = list(_get_nested(config, ["datasets", "train_valid_dbs"], default=[]))
@@ -176,7 +189,7 @@ def step3_subject_split(config: Dict, force: bool = False):
         json.dump(split_data, f, indent=2)
 
     with open(report_path, "w") as f:
-        f.write("Step 3 Report (v6.2) - Stratified Split\n\n")
+        f.write("Step 3 Report- Stratified Split\n\n")
         f.write("PER-DB STATS\n")
         for db, st in db_stats.items():
             f.write(f"  {db}: subjects={st['subjects']}, segments={st['est_segments']}\n")

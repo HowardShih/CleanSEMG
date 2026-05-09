@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-train_tradition.py  v2  —  Traditional Baseline Calibration
+train_tradition.py  —  Traditional Baseline Calibration
 
 Calibrates parameters for HP, TS, EMD, VMD, CEEMDAN on the val split.
 
@@ -369,7 +369,7 @@ def calibrate_ceemdan(samples: List[Dict], trad_cfg: Dict) -> Dict:
 # ============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Traditional Baseline Calibration v2 (HP / TS / EMD / VMD / CEEMDAN)")
+        description="Traditional Baseline Calibration (HP / TS / EMD / VMD / CEEMDAN)")
     parser.add_argument("--config",           type=str, required=True)
     parser.add_argument("--trad-config",      type=str,
                         default="tradition_train_config.yaml")
@@ -414,7 +414,7 @@ def main():
     random.seed(seed); np.random.seed(seed)
 
     print(f"\n{'='*70}")
-    print("Traditional Baseline Calibration  v2")
+    print("Traditional Baseline Calibration")
     print(f"{'='*70}")
     print(f"config:       {args.config}")
     print(f"trad-config:  {args.trad_config}")
