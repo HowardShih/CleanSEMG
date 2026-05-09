@@ -2,7 +2,6 @@
 
 [![NeurIPS 2026](https://img.shields.io/badge/NeurIPS-2026-blue)](https://anonymous.4open.science/r/CleanSEMG)
 [![Dataset](https://img.shields.io/badge/🤗_HuggingFace-Dataset-yellow)](https://huggingface.co/datasets/AnonResearcher0029/CLEANsEMG)
-[![Model Weights](https://img.shields.io/badge/🤗_HuggingFace-Model_Weights-orange)](https://huggingface.co/AnonResearcher0029/CLEANsEMG-weights)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 CLEANSEMG is the first standardized benchmark for evaluating single-channel surface EMG (sEMG) denoising methods. It provides a unified evaluation framework covering **signal-level reconstruction quality**, **feature-level preservation**, and **downstream task performance** across multiple datasets, noise types, and denoising approaches.
