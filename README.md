@@ -15,11 +15,11 @@ CLEANSEMG is the first standardized benchmark for evaluating single-channel surf
 |---|---|
 | **sEMG datasets** | Ninapro DB2, DB3, DB4, DB7, DB8, DB10; Upper-Limb sEMG Fatigue Dataset |
 | **Noise types** | PLI, ECG artifact, Motion artifact (MOA), WGN, Colored noise (pink/brown) |
-| **Classical methods** | HP/IIR (TrustEMG-Net contaminant-aware filter chain), EMD, CEEMDAN, VMD |
-| **Neural methods** | FCN, SDEMG, MSEMG (EMG-MAMBA), TrustEMG-Net |
+| **Classical methods** | HP/IIR, EMD, CEEMDAN, VMD |
+| **Neural methods** | FCN, SDEMG, MSEMG, TrustEMG-Net |
 | **Signal metrics** | SNRimp, RMSE, PRD, LSD |
-| **Feature metrics** | ARV, ZCR, MNF, MDF, Kurtosis (RMSE vs. clean) |
-| **Downstream tasks** | Hand gesture recognition (STCNet on Ninapro DB2), Fatigue classification (Dilated CNN on Cerqueira dataset) |
+| **Feature metrics** | ARV, ZCR, MNF, MDF, Kurtosis |
+| **Downstream tasks** | Hand gesture recognition (STCNet on Ninapro DB2), Fatigue classification (Dilated CNN on Muscle Fatigue dataset) |
 
 ---
 
@@ -51,7 +51,7 @@ All other methods (FCN, SDEMG, TrustEMG-Net, all classical) run on CPU.
 |---|---|---|---|
 | **Ninapro DB2** | [ninapro.hevs.ch](http://ninapro.hevs.ch) | Academic non-commercial | Test (gesture recognition) |
 | **Ninapro DB3, DB4, DB7, DB8, DB10** | [ninapro.hevs.ch](http://ninapro.hevs.ch) | Academic non-commercial | Train |
-| **Upper-Limb sEMG Fatigue Dataset** | [Zenodo 13860256](https://zenodo.org/records/13860256) | CC BY 4.0 | Test (fatigue classification) |
+| **Upper-Limb sEMG Fatigue Dataset** | [Zenodo 13860256](https://zenodo.org/records/14182446) | CC BY 4.0 | Test (fatigue classification) |
 
 > Ninapro raw `.mat` files cannot be redistributed. Download them directly from ninapro.hevs.ch.
 
@@ -79,18 +79,6 @@ snapshot_download(
     local_dir="data/cleansemg"
 )
 ```
-
-| Path | Description |
-|---|---|
-| `test/test_combined.npz` | Fixed test set: Ninapro DB2 clean/noisy pairs, 7 SNR levels × 5 contaminant counts |
-| `test/test_metadata_combined.csv` | Per-segment metadata for `test_combined.npz` |
-| `test/test_metadata_all.csv` | Metadata for all 35 (SNR, k) conditions (per-condition files regenerable via `evaluation/generate_test_data.py`) |
-| `noise_pool/test/{PLI,ECG,WGN,Color}/` | Test noise library (MOA excluded; see note above) |
-| `metadata/tradition_params.json` | Pre-calibrated HP/IIR, EMD, VMD, CEEMDAN parameters |
-| `metadata/ecg_split.json` | Train/test ECG subject split for contaminant-source mismatch |
-| `train/manifests/segment_manifest.csv` | Index of all clean training segments |
-| `fatigue/baseline/subject_N/` | Preprocessed Cerqueira fatigue sEMG at 1 kHz (used by fatigue downstream scripts) |
-| `fatigue/labels/subject_N/` | Self-perceived fatigue labels (0=non-fatigue, 1=transition, 2=fatigue) |
 
 ---
 
@@ -142,8 +130,6 @@ for method in hp emd vmd ceemdan; do
 done
 ```
 
-> **Note on HP/IIR:** The HP baseline implements the TrustEMG-Net contaminant-aware IIR filter chain (De Luca et al. [26] extended by Wang et al. [22]), not a single high-pass filter. The filter is noise-type-aware: PLI uses a notch filter, ECG/MOA use high-pass filters with source-specific cutoffs, and WGN/CLN use bandpass filtering.
-
 ---
 
 ## Full Reproduction
@@ -155,7 +141,7 @@ Edit `configs/config.yaml` and set `paths.root` and `paths.data_root`:
 ```yaml
 paths:
   root: "."
-  data_root: "/path/to/your/data"   # directory containing Ninapro and Cerqueira raw data
+  data_root: "/path/to/your/data"   # directory containing Ninapro and Muscle Fatigue raw data
 ```
 
 ### Step 2: Data preparation
@@ -166,13 +152,6 @@ export DATA_ROOT=/path/to/your/data
 bash scripts/run_pipeline.sh --config configs/config.yaml --stages all
 ```
 
-| Stage | Script | Description |
-|---|---|---|
-| data | `data_pipeline/step1_qc_raw.py`, `step2_quality_filter.py` | QC filtering (SMR, SHR, OHM, Hampel) |
-| data | `data_pipeline/step3_subject_split.py` | Cross-DB stratified split; DB2 held out as test |
-| data | `data_pipeline/step4_preproc_and_segment.py` | Bandpass 20–500 Hz → 1 kHz → 2 s segments (unnormalized) |
-| noise | `noise/noise_generator.py` | Generate PLI, ECG, MOA, WGN, Colored noise libraries |
-| testdata | `evaluation/generate_test_data.py` | Fixed offline mixing: 7 SNR × 5 k = 35 conditions |
 
 ### Step 3: Train neural denoisers
 
@@ -227,7 +206,7 @@ python downstream/gesture/prepare_neural.py \
 bash downstream/gesture/run_all.sh
 ```
 
-### Fatigue Classification (Cerqueira Dataset)
+### Fatigue Classification (Muscle Fatigue Dataset)
 
 Uses the Cerqueira et al. (2024) dataset with a Dilated CNN classifier.
 
@@ -251,7 +230,7 @@ Supported `--denoiser` values: `hp`, `emd`, `vmd`, `ceemdan`, `fcn`, `msemg`, `s
 
 ## Results
 
-**Table 1.** Signal reconstruction and feature preservation on Ninapro DB2 (macro-average over all SNR × contaminant-type conditions).
+**Table 1.** Overall denoising performance.
 
 | Method | SNRimp (dB) ↑ | RMSE (×10⁻⁵) ↓ | PRD (%) ↓ | LSD (dB) ↓ | RMSE-ZCR ↓ | RMSE-MNF ↓ | RMSE-MDF ↓ |
 |---|---|---|---|---|---|---|---|
@@ -277,20 +256,6 @@ Supported `--denoiser` values: `hp`, `emd`, `vmd`, `ceemdan`, `fcn`, `msemg`, `s
 | MSEMG | 68.04 | 65.31 | 58.84 | 58.94 |
 | **TrustEMG-Net** | 68.52 | 65.59 | 60.05 | 60.22 |
 
-Fatigue results use the Dilated CNN classifier evaluated via 3-fold cross-validation.
-
----
-
-## Verification
-
-Run the smoke test to verify all model imports and forward passes:
-
-```bash
-cd /path/to/CleanSEMG
-python scripts/smoke_test.py
-```
-
-Expected: all tests PASS in ~60 seconds on CPU.
 
 ---
 
@@ -351,27 +316,16 @@ This repository adapts code from the following open-source projects. All origina
 | File / Directory | Original work | Paper | Code |
 |---|---|---|---|
 | `denoising/FCN.py` | Wang et al., IEEE Sensors J., 2023 | [doi:10.1109/JSEN.2023.3234567](https://doi.org/10.1109/JSEN.2023.3234567) | [GitHub](https://github.com/ASUS217/ECG-removal-from-sEMG) |
-| `denoising/MSEMG.py` | Liu et al., ICASSP 2025 | [doi:10.1109/ICASSP49660.2025.10887547](https://doi.org/10.1109/ICASSP49660.2025.10887547) | — |
+| `denoising/MSEMG.py` | Liu et al., ICASSP 2025 | [doi:10.1109/ICASSP49660.2025.10887547](https://doi.org/10.1109/ICASSP49660.2025.10887547) | [GitHub](https://github.com/yt-tony-liu/MSEMG) |
 | `denoising/SDEMG.py` | Liu et al., ICASSP 2024 | [doi:10.1109/ICASSP48485.2024.10446154](https://doi.org/10.1109/ICASSP48485.2024.10446154) | [GitHub](https://github.com/tonyliu0910/SDEMG) |
 | `denoising/TrustEMGNet.py` | Wang et al., IEEE JBHI, 2025 | [doi:10.1109/JBHI.2024.3504378](https://doi.org/10.1109/JBHI.2024.3504378) | [GitHub](https://github.com/eric-wang135/TrustEMG) |
-| `downstream/gesture/STCNet/` | Yang et al., Comput. Biol. Med., 2025 | [doi:10.1016/j.compbiomed.2024.109525](https://doi.org/10.1016/j.compbiomed.2024.109525) | [GitHub](https://github.com/jaemoyang/STCNet) |
+| `downstream/gesture/STCNet/` | Yang et al., Comput. Biol. Med., 2025 | [doi:10.1016/j.compbiomed.2024.109525](https://doi.org/10.1016/j.compbiomed.2024.109525) | [GitHub](https://github.com/Caoyichao/STCNet) |
 
 Each file contains an attribution header specifying the original source and modifications made for this benchmark.
 
 ---
 
 ## Citation
-
-```bibtex
-@inproceedings{cleansemg2026,
-  title     = {{CLEANSEMG}: A Benchmark for Single-Channel
-               Surface Electromyography Denoising Algorithms},
-  booktitle = {Advances in Neural Information Processing Systems},
-  year      = {2026},
-}
-```
-
-<details>
 <summary>Dataset and method citations</summary>
 
 ```bibtex
@@ -511,11 +465,3 @@ Each file contains an attribution header specifying the original source and modi
 ```
 
 </details>
-
----
-
-## License
-
-Code written for this benchmark is released under the **MIT License**. Third-party code in `denoising/` and `downstream/gesture/STCNet/` retains its original license — see individual files and subdirectory `LICENSE` files for details.
-
-Datasets retain their original licenses: the Cerqueira fatigue dataset is CC BY 4.0; Ninapro datasets are academic non-commercial; MIT-BIH databases are ODC-BY; the Machado et al. motion artifact dataset is subject to the terms in the original publication.
